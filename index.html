@@ -866,6 +866,10 @@ function PanelBlast() {
                 config: { iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
                         { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun.relay.metered.ca:80' },
+                        { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                        { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+                        { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
                     ] },
             });
             peerRef.current = peer;
@@ -888,7 +892,22 @@ function PanelBlast() {
             });
             peer.on('error', (err) => {
                 console.error('PeerJS error:', err);
-                setBattlePhase('error');
+                if (err.type === 'unavailable-id') {
+                    // IDが衝突した場合は新しいコードで再試行
+                    peer.destroy();
+                    const retryCode = generateRoomCode();
+                    const retryPeer = new Peer(retryCode, peer._options);
+                    peerRef.current = retryPeer;
+                    retryPeer.on('open', id => { setMyPeerId(id); });
+                    retryPeer.on('connection', conn => {
+                        connRef.current = conn;
+                        setupConn(conn);
+                        setTimeout(() => { conn.send({ type: 'start' }); startBattleGame(); }, 500);
+                    });
+                    retryPeer.on('error', () => setBattlePhase('error'));
+                } else {
+                    setBattlePhase('error');
+                }
             });
         }
         catch (e) {
@@ -911,15 +930,24 @@ function PanelBlast() {
                 config: { iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
                         { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun.relay.metered.ca:80' },
+                        { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                        { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+                        { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
                     ] },
             });
             peerRef.current = peer;
             const timeout = setTimeout(() => setBattlePhase('error'), 15000);
             peer.on('open', () => {
                 clearTimeout(timeout);
-                const conn = peer.connect(code.trim());
+                const conn = peer.connect(code.trim().toUpperCase());
                 connRef.current = conn;
                 setupConn(conn);
+                // WebRTC接続自体のタイムアウト（20秒）
+                const connTimeout = setTimeout(() => {
+                    if (!conn.open) setBattlePhase('error');
+                }, 20000);
+                conn.on('open', () => clearTimeout(connTimeout));
             });
             peer.on('error', (err) => {
                 console.error('PeerJS error:', err);
@@ -1287,7 +1315,7 @@ function PanelBlast() {
                     React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 } },
                         React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#30D158,#14532D)" }, onClick: hostBattle, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\uD83C\uDFE0 \u90E8\u5C4B\u3092\u4F5C\u308B\uFF08\u30DB\u30B9\u30C8\uFF09"),
                         React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-                            React.createElement("input", { placeholder: "\u30EB\u30FC\u30E0\u30B3\u30FC\u30C9\u3092\u5165\u529B", value: joinCode, onChange: e => setJoinCode(e.target.value), style: { flex: 1, background: "#0D0D25", border: "1px solid #1E1E4A",
+                            React.createElement("input", { placeholder: "\u30EB\u30FC\u30E0\u30B3\u30FC\u30C9\u3092\u5165\u529B", value: joinCode, onChange: e => setJoinCode(e.target.value.toUpperCase()), style: { flex: 1, background: "#0D0D25", border: "1px solid #1E1E4A",
                                     borderRadius: 6, color: "#fff", padding: "8px 10px",
                                     fontFamily: "inherit", fontSize: 11, outline: "none" } }),
                             React.createElement("button", { style: { ...S.overlayBtn, padding: "8px 12px", fontSize: 12 }, onClick: () => joinBattle(joinCode), onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\u53C2\u52A0"))))),

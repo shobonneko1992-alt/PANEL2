@@ -820,6 +820,10 @@ export default function PanelBlast() {
         config: { iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun.relay.metered.ca:80' },
+          { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
         ]},
       });
       peerRef.current = peer;
@@ -860,15 +864,23 @@ export default function PanelBlast() {
         config: { iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun.relay.metered.ca:80' },
+          { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
         ]},
       });
       peerRef.current = peer;
       const timeout = setTimeout(() => setBattlePhase('error'), 15000);
       peer.on('open', () => {
         clearTimeout(timeout);
-        const conn = peer.connect(code.trim());
+        const conn = peer.connect(code.trim().toUpperCase());
         connRef.current = conn;
         setupConn(conn);
+        const connTimeout = setTimeout(() => {
+          if (!conn.open) setBattlePhase('error');
+        }, 20000);
+        conn.on('open', () => clearTimeout(connTimeout));
       });
       peer.on('error', (err) => {
         console.error('PeerJS error:', err);
@@ -1406,7 +1418,7 @@ UP
                     <input
                       placeholder="ルームコードを入力"
                       value={joinCode}
-                      onChange={e=>setJoinCode(e.target.value)}
+                      onChange={e=>setJoinCode(e.target.value.toUpperCase())}
                       style={{flex:1,background:"#0D0D25",border:"1px solid #1E1E4A",
                         borderRadius:6,color:"#fff",padding:"8px 10px",
                         fontFamily:"inherit",fontSize:11,outline:"none"}}
