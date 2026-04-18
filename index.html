@@ -52,6 +52,16 @@ const RISE_SPEEDS = [
     { label: 'LV 4', px: 2.0 },
 ];
 const COLORS = ["red", "blue", "green", "yellow", "purple", "teal"];
+// お邪魔パネルのカラーテーマ（6色）
+const OJAMA_THEMES = {
+    red:    { hi: "#FCA5A5", mid: "#EF4444", lo: "#7F1D1D", border: "#FCA5A5", name: "レッド" },
+    blue:   { hi: "#93C5FD", mid: "#3B82F6", lo: "#1E3A8A", border: "#93C5FD", name: "ブルー" },
+    green:  { hi: "#86EFAC", mid: "#22C55E", lo: "#14532D", border: "#86EFAC", name: "グリーン" },
+    purple: { hi: "#D8B4FE", mid: "#A855F7", lo: "#581C87", border: "#D8B4FE", name: "パープル" },
+    pink:   { hi: "#F9A8D4", mid: "#E8A0C8", lo: "#9D174D", border: "#F0B8D8", name: "ピンク" },
+    yellow: { hi: "#FDE68A", mid: "#F59E0B", lo: "#78350F", border: "#FDE68A", name: "イエロー" },
+};
+const OJAMA_THEME_KEYS = Object.keys(OJAMA_THEMES);
 // Each color: gradient hi/mid/lo, text icon, glow tint
 const PALETTE = {
     red: { hi: "#FF8099", mid: "#FF2D55", lo: "#8B001A", icon: "◆", glow: "#FF2D55" },
@@ -126,7 +136,7 @@ function findMatches(g) {
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS;) {
             const cell = g[r][c];
-            if (!cell || cell.flashing) {
+            if (!cell || cell.flashing || cell.color === 'ojama') {
                 c++;
                 continue;
             }
@@ -143,7 +153,7 @@ function findMatches(g) {
     for (let c = 0; c < COLS; c++) {
         for (let r = 0; r < ROWS;) {
             const cell = g[r][c];
-            if (!cell || cell.flashing) {
+            if (!cell || cell.flashing || cell.color === 'ojama') {
                 r++;
                 continue;
             }
@@ -173,20 +183,72 @@ function applyGravity(g) {
     }
     return out;
 }
+/* ── お邪魔グループID生成 ── */
+let _ojamaIdSeq = 0;
+const newOjamaId = () => `oj-${++_ojamaIdSeq}`;
+
 /**
  * applyGravityStep(grid)
- * Drops every floating block exactly ONE row downward.
- * Returns { next: grid, moved: boolean }.
- * Repeated calls animate a slow fall one row at a time.
+ * 通常パネル: 列ごとに独立落下
+ * お邪魔グループ(ojamaId): 矩形全体を1単位として落下
  */
 function applyGravityStep(g) {
     let moved = false;
     const out = g.map(row => [...row]);
+
+    // 1. ojamaIdごとにセル収集
+    const groups = new Map();
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const cell = out[r][c];
+            if (cell && cell.color === 'ojama') {
+                const id = cell.ojamaId || '__solo__';
+                if (!groups.has(id)) groups.set(id, []);
+                groups.get(id).push({ r, c });
+            }
+        }
+    }
+
+    // 2. 各グループを下から1行ずつ落下（ojamaIdグループは全体一括）
+    const movedIds = new Set();
+    for (const [id, cells] of groups) {
+        const maxR = Math.max(...cells.map(x => x.r));
+        if (maxR + 1 >= ROWS) continue; // 底辺
+
+        // グループ最下行の全セルが落下可能か確認
+        const bottomCells = cells.filter(x => x.r === maxR);
+        let canFall = true;
+        for (const { c } of bottomCells) {
+            const below = out[maxR + 1][c];
+            if (below && !(below.color === 'ojama' && below.ojamaId === id)) {
+                canFall = false; break;
+            }
+        }
+        if (!canFall) continue;
+
+        // 下から順に移動（上書き防止）
+        const sorted = [...cells].sort((a, b) => b.r - a.r);
+        for (const { r, c } of sorted) {
+            out[r + 1][c] = out[r][c];
+            out[r][c] = null;
+        }
+        moved = true;
+        movedIds.add(id);
+    }
+
+    // 3. 通常パネル落下（ojamaグループが動いた列は今サイクルはスキップ）
+    const ojamaOccupied = new Set();
+    for (const [id, cells] of groups) {
+        if (movedIds.has(id)) {
+            for (const { r, c } of cells) ojamaOccupied.add(`${r+1},${c}`);
+        }
+    }
     for (let r = ROWS - 1; r > 0; r--) {
         for (let c = 0; c < COLS; c++) {
-            if (!out[r][c] && out[r - 1][c]) {
-                out[r][c] = out[r - 1][c];
-                out[r - 1][c] = null;
+            if (!out[r][c] && out[r-1][c] && out[r-1][c].color !== 'ojama'
+                && !ojamaOccupied.has(`${r},${c}`)) {
+                out[r][c] = out[r-1][c];
+                out[r-1][c] = null;
                 moved = true;
             }
         }
@@ -195,37 +257,127 @@ function applyGravityStep(g) {
 }
 /**
  * expandWithOjama(matches, grid)
- * マッチセルに隣接するお邪魔パネルをまとめて消去対象に追加する。
+ * - 1行グループ: 全セル変色。さらに直上に積み重なった1行グループも連鎖変色
+ * - 2行以上グループ: 最下行のみ変色（残りは落下）
+ * Returns { clearSet, ojamaSet }
  */
 function expandWithOjama(matches, g) {
-    var _a;
     const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-    const expanded = new Set(matches);
+
+    // グループIDの全セル・高さを返すヘルパー
+    const getGroupInfo = (id) => {
+        const cells = [];
+        for (let r = 0; r < ROWS; r++)
+            for (let c = 0; c < COLS; c++) {
+                const cell = g[r][c];
+                if ((cell === null || cell === void 0 ? void 0 : cell.color) === 'ojama'
+                    && (cell.ojamaId || `__solo_${r}_${c}`) === id)
+                    cells.push({ r, c });
+            }
+        return cells;
+    };
+
+    // 直接隣接するお邪魔グループIDを収集
+    const touchedIds = new Set();
     for (const k of matches) {
         const [r, c] = k.split(',').map(Number);
         for (const [dr, dc] of dirs) {
             const nr = r + dr, nc = c + dc;
-            if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS)
-                if (((_a = g[nr][nc]) === null || _a === void 0 ? void 0 : _a.color) === 'ojama')
-                    expanded.add(`${nr},${nc}`);
+            if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+                const cell = g[nr][nc];
+                if ((cell === null || cell === void 0 ? void 0 : cell.color) === 'ojama')
+                    touchedIds.add(cell.ojamaId || `__solo_${nr}_${nc}`);
+            }
         }
     }
-    return expanded;
+    if (touchedIds.size === 0) return { clearSet: matches, ojamaSet: new Set() };
+
+    const ojamaSet = new Set();
+    const processedIds = new Set();
+
+    for (const id of touchedIds) {
+        const groupCells = getGroupInfo(id);
+        if (groupCells.length === 0) continue;
+        const minR = Math.min(...groupCells.map(x => x.r));
+        const maxR = Math.max(...groupCells.map(x => x.r));
+        const groupHeight = maxR - minR + 1;
+
+        if (groupHeight === 1) {
+            // 1行グループ: 全セル変色
+            groupCells.forEach(({ r, c }) => ojamaSet.add(`${r},${c}`));
+            processedIds.add(id);
+
+            // 直上に積み重なった1行グループも連鎖変色
+            let scanRow = minR - 1;
+            while (scanRow >= 0) {
+                // この行でgroupCellsと同じ列範囲にあるお邪魔を確認
+                const minC = Math.min(...groupCells.map(x => x.c));
+                const maxC = Math.max(...groupCells.map(x => x.c));
+                const aboveIds = new Set();
+                for (let c = minC; c <= maxC; c++) {
+                    const cell = g[scanRow][c];
+                    if ((cell === null || cell === void 0 ? void 0 : cell.color) === 'ojama')
+                        aboveIds.add(cell.ojamaId || `__solo_${scanRow}_${c}`);
+                }
+                if (aboveIds.size === 0) break;
+                let allSingleRow = true;
+                for (const aboveId of aboveIds) {
+                    if (processedIds.has(aboveId)) continue;
+                    const aboveCells = getGroupInfo(aboveId);
+                    const aMinR = Math.min(...aboveCells.map(x => x.r));
+                    const aMaxR = Math.max(...aboveCells.map(x => x.r));
+                    if (aMaxR - aMinR + 1 === 1) {
+                        aboveCells.forEach(({ r, c }) => ojamaSet.add(`${r},${c}`));
+                        processedIds.add(aboveId);
+                    } else {
+                        allSingleRow = false;
+                    }
+                }
+                if (!allSingleRow) break;
+                scanRow--;
+            }
+        } else {
+            // 2行以上: 最下行のみ変色
+            groupCells.filter(x => x.r === maxR).forEach(({ r, c }) => ojamaSet.add(`${r},${c}`));
+        }
+    }
+    return { clearSet: matches, ojamaSet };
 }
 /**
  * addOjamaToGrid(grid, count)
- * お邪魔パネルを count 個、上から押し込む（既存ブロックを上にシフト）。
+ * お邪魔パネルを上から配置。同じ塊は同じojamaIdを持つ。
+ * 最小単位3個・3の倍数に切り上げ。
+ * count <= COLS: 1行バー。count > COLS: 複数行の矩形ブロック。
  */
 function addOjamaToGrid(g, count) {
+    const adjusted = Math.max(3, Math.ceil(count / 3) * 3);
     const ng = g.map(r => [...r]);
-    const rows = Math.ceil(count / COLS);
-    let rem = count;
-    for (let i = 0; i < rows; i++) {
-        for (let r = 0; r < ROWS - 1; r++)
-            ng[r] = ng[r + 1];
+    const id = newOjamaId();
+    const ojamaRows = Math.ceil(adjusted / COLS);
+
+    // 既存パネルの最上行を探す
+    let topOccupied = ROWS;
+    for (let r = 0; r < ROWS; r++) {
+        if (ng[r].some(Boolean)) { topOccupied = r; break; }
+    }
+
+    // おじゃまを既存パネルの直上に配置（row 0以上に収める）
+    const startRow = Math.max(0, topOccupied - ojamaRows);
+
+    // 配置先を一旦クリアしてから書き込む（既存パネルを上書きしない）
+    let rem = adjusted;
+    for (let i = 0; i < ojamaRows; i++) {
+        const r = startRow + i;
+        if (r >= ROWS) break;
         const fill = Math.min(rem, COLS);
-        rem -= fill;
-        ng[ROWS - 1] = Array.from({ length: COLS }, (_, c) => c < fill ? { color: 'ojama' } : null);
+        const safeFill = fill < 3 ? 3 : fill;
+        rem -= safeFill;
+        // 既存パネルが無いセルにだけおじゃまを置く
+        for (let c = 0; c < COLS; c++) {
+            if (c < safeFill && !ng[r][c]) {
+                ng[r][c] = { color: 'ojama', ojamaId: id };
+            }
+        }
     }
     return ng;
 }
@@ -251,7 +403,7 @@ function PanelBlast() {
     const [riseOffset, setRiseOffset] = useState(0);
     const [particles, setParticles] = useState([]);
     const [pinch, setPinch] = useState(false); // 天井まで2マスでtrue
-    const [bgmOn, setBgmOn] = useState(false); // BGM on/off
+    const [bgmOn, setBgmOn] = useState(true); // BGM on/off
     const [pinchBgmOn, setPinchBgmOn] = useState(true); // ピンチBGM on/off
     const audioCtxRef = useRef(null); // Web Audio API context (ポン音用)
     const bgmNodesRef = useRef([]); // BGM oscillator nodes (for stop)
@@ -265,7 +417,11 @@ function PanelBlast() {
     const [myPeerId, setMyPeerId] = useState('');
     const [joinCode, setJoinCode] = useState('');
     const [ojamaQueue, setOjamaQueue] = useState(0); // 溜まったお邪魔数
-    const [opponentInfo, setOpponentInfo] = useState({ score: 0, over: false, ojama: 0 });
+    const [opponentInfo, setOpponentInfo] = useState({ score: 0, over: false, ojama: 0, topRow: ROWS });
+    const [battleMode, setBattleMode] = useState(null); // null|'player'|'cpu'
+    const [cpuDifficulty, setCpuDifficulty] = useState(1); // 1=easy 2=normal 3=hard
+    const [ojamaTheme, setOjamaTheme] = useState('red'); // お邪魔パネルカラー
+    const [countdown, setCountdown] = useState(null); // 3|2|1|null カウントダウン
     /* ── §3b  Mutable Refs (avoid stale closures in async logic) ── */
     const gridRef = useRef(grid);
     const scoreRef = useRef(0);
@@ -288,6 +444,7 @@ function PanelBlast() {
     const connRef = useRef(null); // PeerJS DataConnection
     const ojamaQueueRef = useRef(0); // mirrors ojamaQueue for closures
     const battlePhaseRef = useRef('off');
+    const cpuTimerRef = useRef(null); // CPU対戦タイマー
     // pendingSwap removed — falling swaps are now applied immediately
     // Keep refs in sync with latest state values
     useEffect(() => {
@@ -296,7 +453,7 @@ function PanelBlast() {
         // 上昇中かつ天井まで2マス以内にブロックがあればピンチ（消去中・連鎖中は除外）
         const hasFlashing = grid.some(row => row.some(c => c === null || c === void 0 ? void 0 : c.flashing));
         const rising = ((_b = (_a = RISE_SPEEDS[riseSpeedIdx]) === null || _a === void 0 ? void 0 : _a.px) !== null && _b !== void 0 ? _b : 0) > 0;
-        const inDanger = rising && (grid[0].some(Boolean) || grid[1].some(Boolean)) && !hasFlashing && !cycleRunning.current && !fallingRef.current;
+        const inDanger = rising && (grid[1].some(Boolean) || grid[2].some(Boolean)) && !hasFlashing && !cycleRunning.current && !fallingRef.current;
         setPinch(inDanger);
     }, [grid]);
     useEffect(() => { scoreRef.current = score; }, [score]);
@@ -387,7 +544,7 @@ function PanelBlast() {
             pinchBgmActive.current = false;
             return;
         }
-        const danger = gridRef.current[0].some(Boolean) || gridRef.current[1].some(Boolean);
+        const danger = gridRef.current[1].some(Boolean) || gridRef.current[2].some(Boolean);
         if (pinch && !pinchBgmActive.current && pinchBgmOn) {
             // ピンチ突入かつピンチBGMオン: 通常BGMを止めてボスBGMを開始
             (_b = bgmAudioRef.current) === null || _b === void 0 ? void 0 : _b.pause();
@@ -510,8 +667,9 @@ function PanelBlast() {
         // Always read gridRef.current — swaps during CHAIN_DELAY or fall land here,
         // so we never miss a match caused by a mid-animation swap.
         const workG = gridRef.current;
-        // お邪魔パネルを隣接消去に含める
-        const matches = expandWithOjama(findMatches(workG), workG);
+        // お邪魔パネルは消さず変色。通常マッチと邪魔変色セットを分離
+        const { clearSet, ojamaSet } = expandWithOjama(findMatches(workG), workG);
+        const matches = clearSet;
         // ── No matches → chain ends; apply pending ojama if any ──
         if (!matches.size) {
             // 連鎖が1回以上あった場合は上昇を3秒間停止
@@ -525,8 +683,22 @@ function PanelBlast() {
                 const afterOjama = addOjamaToGrid(gridRef.current, count);
                 gridRef.current = afterOjama;
                 setGrid(afterOjama);
-                // お邪魔を追加したのでもう一度マッチチェック
-                setTimeout(() => cycleRef.current(afterOjama, 1), CHAIN_DELAY);
+                // お邪魔を上から落とすアニメーション
+                fallingRef.current = true;
+                const OJAMA_FALL_MS = 120;
+                const tickOjamaFall = () => {
+                    if (cycleIdRef.current !== myCycleId) return;
+                    const { next, moved } = applyGravityStep(gridRef.current);
+                    gridRef.current = next;
+                    setGrid(next);
+                    if (moved) {
+                        setTimeout(tickOjamaFall, OJAMA_FALL_MS);
+                    } else {
+                        fallingRef.current = false;
+                        setTimeout(() => cycleRef.current(next, 1), CHAIN_DELAY);
+                    }
+                };
+                setTimeout(tickOjamaFall, OJAMA_FALL_MS);
                 return;
             }
             chainLvlRef.current = 0;
@@ -549,7 +721,7 @@ function PanelBlast() {
             scoreRef.current = ns;
             // スコアを対戦相手に送信
             if ((_a = connRef.current) === null || _a === void 0 ? void 0 : _a.open)
-                connRef.current.send({ type: 'score', score: ns });
+                connRef.current.send({ type: 'score', score: ns, topRow: gridRef.current.findIndex(row => row.some(Boolean)) });
             return ns;
         });
         // ── Chain message (shown for chain ≥ 2) ──
@@ -616,37 +788,140 @@ function PanelBlast() {
                 }
                 gridRef.current = g;
                 setGrid(g);
-                // ── Last cell removed → animate gravity one row at a time ──
+                // ── Last cell removed → Thawing: お邪魔を下の行から順に還元 ──
                 if (i === matchArray.length - 1) {
                     flashingRef.current = false;
                     fallingRef.current = true;
-                    const tickFall = () => {
-                        // サイクルIDが変わっていたら停止
-                        if (cycleIdRef.current !== myCycleId)
-                            return;
-                        const { next, moved } = applyGravityStep(gridRef.current);
-                        setGrid(next);
-                        gridRef.current = next;
-                        if (moved) {
-                            setTimeout(tickFall, FALL_STEP_MS);
-                        }
-                        else {
-                            // フラッシュ中（パネル消去アニメーション中）はゲームオーバー判定しない
-                            if (isGameOver(next) && !flashingRef.current && !cycleRunning.current) {
-                                chainLvlRef.current = 0;
-                                fallingRef.current = false;
-                                cycleRunning.current = false;
-                                setPhase("gameover");
-                                phaseRef.current = "gameover";
-                                return;
+                    if (ojamaSet.size > 0) {
+                        // Step1: 変換される行のセルだけ isThawing=true でフラッシュ（残る行は点滅なし）
+                        const gThaw = gridRef.current.map(row => [...row]);
+                        ojamaSet.forEach(k => {
+                            const [or, oc] = k.split(',').map(Number);
+                            if (gThaw[or][oc] && gThaw[or][oc].color === 'ojama') {
+                                // 同行の横連結全体をisThawing
+                                let left = oc;
+                                while (left > 0 && gThaw[or][left-1] && gThaw[or][left-1].color === 'ojama') left--;
+                                let right = oc;
+                                while (right < COLS-1 && gThaw[or][right+1] && gThaw[or][right+1].color === 'ojama') right++;
+                                for (let gc = left; gc <= right; gc++)
+                                    if (gThaw[or][gc] && gThaw[or][gc].color === 'ojama')
+                                        gThaw[or][gc] = { ...gThaw[or][gc], isThawing: true };
                             }
-                            fallingRef.current = false;
-                            // cycleRunning は CHAIN_DELAY中も true のまま（連鎖待機中も上昇停止）
-                            // 次の cycleRef 呼び出し冒頭で true にセットし直される
-                            setTimeout(() => cycleRef.current(next, chain + 1), CHAIN_DELAY);
-                        }
-                    };
-                    setTimeout(tickFall, FALL_STEP_MS);
+                        });
+                        gridRef.current = gThaw;
+                        setGrid(gThaw);
+                        // Step2: 行(Y)ごとにグループ化し、下の行(大きいY)から順にソート
+                        // さらに各行の横連結グループ全体を含める
+                        const rowsMap = new Map();
+                        ojamaSet.forEach(k => {
+                            const [or, oc] = k.split(',').map(Number);
+                            if (!rowsMap.has(or)) rowsMap.set(or, new Set());
+                            // 横方向に連結しているお邪魔を全て追加
+                            const curGrid = gridRef.current;
+                            let left = oc;
+                            while (left > 0 && curGrid[or][left-1] && curGrid[or][left-1].color === 'ojama') left--;
+                            let right = oc;
+                            while (right < COLS-1 && curGrid[or][right+1] && curGrid[or][right+1].color === 'ojama') right++;
+                            for (let gc = left; gc <= right; gc++) rowsMap.get(or).add(gc);
+                        });
+                        // Setをarray of {r,c}に変換
+                        const rowsMapArr = new Map();
+                        rowsMap.forEach((cols, row) => {
+                            rowsMapArr.set(row, [...cols].map(c => ({ r: row, c })));
+                        });
+                        const sortedRows = Array.from(rowsMapArr.keys()).sort((a, b) => b - a);
+                        // Step3: 各行について右から左へ1列ずつ変換、最左列完了後に落下
+                        const THAW_COL_INTERVAL = 320; // 列ごとの間隔（0.25倍速）
+                        // 全変換タスクをフラットなリストに展開（行×列）
+                        const thawSteps = [];
+                        sortedRows.forEach(rowY => {
+                            const cols = rowsMapArr.get(rowY).map(x => x.c).sort((a, b) => b - a); // 右から左
+                            cols.forEach(col => thawSteps.push({ r: rowY, c: col }));
+                        });
+                        // 変換後のクリーンアップ共通処理
+                        const cleanSmallGroups = (gGrid) => {
+                            const idCounts = new Map();
+                            for (let cr = 0; cr < ROWS; cr++)
+                                for (let cc2 = 0; cc2 < COLS; cc2++) {
+                                    const cell = gGrid[cr][cc2];
+                                    if (cell && cell.color === 'ojama') {
+                                        const id = cell.ojamaId || `__r${cr}c${cc2}`;
+                                        idCounts.set(id, (idCounts.get(id) || 0) + 1);
+                                    }
+                                }
+                            let cleaned = false;
+                            for (let cr = 0; cr < ROWS; cr++)
+                                for (let cc2 = 0; cc2 < COLS; cc2++) {
+                                    const cell = gGrid[cr][cc2];
+                                    if (cell && cell.color === 'ojama') {
+                                        const id = cell.ojamaId || `__r${cr}c${cc2}`;
+                                        if ((idCounts.get(id) || 0) < 3) {
+                                            gGrid[cr][cc2] = { color: COLORS[rnd(COLORS.length)] };
+                                            cleaned = true;
+                                        }
+                                    }
+                                }
+                            return cleaned;
+                        };
+                        const startTickFall = () => {
+                            const tickFall = () => {
+                                if (cycleIdRef.current !== myCycleId) return;
+                                const { next, moved } = applyGravityStep(gridRef.current);
+                                setGrid(next); gridRef.current = next;
+                                if (moved) {
+                                    setTimeout(tickFall, FALL_STEP_MS);
+                                } else {
+                                    const cl = next.map(row => [...row]);
+                                    const didClean = cleanSmallGroups(cl);
+                                    if (didClean) { gridRef.current = cl; setGrid(cl); }
+                                    const final = didClean ? cl : next;
+                                    if (isGameOver(final) && !flashingRef.current && !cycleRunning.current) {
+                                        chainLvlRef.current = 0; fallingRef.current = false;
+                                        cycleRunning.current = false;
+                                        setPhase("gameover"); phaseRef.current = "gameover"; return;
+                                    }
+                                    fallingRef.current = false;
+                                    setTimeout(() => cycleRef.current(final, chain + 1), CHAIN_DELAY);
+                                }
+                            };
+                            setTimeout(tickFall, FALL_STEP_MS);
+                        };
+                        thawSteps.forEach(({ r: or, c: oc }, stepIdx) => {
+                            setTimeout(() => {
+                                // thaw変換はサイクルIDに関わらず必ず実行（確定した変化）
+                                const gConv = gridRef.current.map(row => [...row]);
+                                if (gConv[or][oc] && gConv[or][oc].color === 'ojama')
+                                    gConv[or][oc] = { color: COLORS[rnd(COLORS.length)] };
+                                cleanSmallGroups(gConv);
+                                gridRef.current = gConv; setGrid(gConv);
+                                // 全列変換が終わったら落下開始
+                                if (stepIdx === thawSteps.length - 1) setTimeout(startTickFall, 700);
+                            }, stepIdx * THAW_COL_INTERVAL);
+                        });
+                    } else {
+                        // お邪魔なし: 通常の重力処理
+                        const tickFall = () => {
+                            if (cycleIdRef.current !== myCycleId) return;
+                            const { next, moved } = applyGravityStep(gridRef.current);
+                            setGrid(next);
+                            gridRef.current = next;
+                            if (moved) {
+                                setTimeout(tickFall, FALL_STEP_MS);
+                            } else {
+                                if (isGameOver(next) && !flashingRef.current && !cycleRunning.current) {
+                                    chainLvlRef.current = 0;
+                                    fallingRef.current = false;
+                                    cycleRunning.current = false;
+                                    setPhase("gameover");
+                                    phaseRef.current = "gameover";
+                                    return;
+                                }
+                                fallingRef.current = false;
+                                setTimeout(() => cycleRef.current(next, chain + 1), CHAIN_DELAY);
+                            }
+                        };
+                        setTimeout(tickFall, FALL_STEP_MS);
+                    }
                 }
             }, i * STEP_MS + CELL_FLASH_MS);
         });
@@ -816,7 +1091,7 @@ function PanelBlast() {
                 setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + data.count }));
             }
             if (data.type === 'score') {
-                setOpponentInfo(p => ({ ...p, score: data.score }));
+                setOpponentInfo(p => ({ ...p, score: data.score, topRow: data.topRow ?? ROWS }));
             }
             if (data.type === 'gameover') {
                 setOpponentInfo(p => ({ ...p, over: true }));
@@ -842,8 +1117,8 @@ function PanelBlast() {
         ojamaQueueRef.current = 0;
         setOjamaQueue(0);
         setOpponentInfo({ score: 0, over: false, ojama: 0 });
-        startTimeAttack();
-    }, [startTimeAttack]);
+        startGame(); // 対戦は時間無制限
+    }, [startGame]);
     const hostBattle = useCallback(() => {
         setBattlePhase('hosting');
         setMyPeerId('');
@@ -855,9 +1130,7 @@ function PanelBlast() {
                 setBattlePhase('error');
                 return;
             }
-            const generateRoomCode = () => { const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join(""); };
-            const shortCode = generateRoomCode();
-            const peer = new Peer(shortCode, {
+            const peer = new Peer(undefined, {
                 host: '0.peerjs.com',
                 port: 443,
                 path: '/',
@@ -866,10 +1139,6 @@ function PanelBlast() {
                 config: { iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
                         { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun.relay.metered.ca:80' },
-                        { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
                     ] },
             });
             peerRef.current = peer;
@@ -892,22 +1161,7 @@ function PanelBlast() {
             });
             peer.on('error', (err) => {
                 console.error('PeerJS error:', err);
-                if (err.type === 'unavailable-id') {
-                    // IDが衝突した場合は新しいコードで再試行
-                    peer.destroy();
-                    const retryCode = generateRoomCode();
-                    const retryPeer = new Peer(retryCode, peer._options);
-                    peerRef.current = retryPeer;
-                    retryPeer.on('open', id => { setMyPeerId(id); });
-                    retryPeer.on('connection', conn => {
-                        connRef.current = conn;
-                        setupConn(conn);
-                        setTimeout(() => { conn.send({ type: 'start' }); startBattleGame(); }, 500);
-                    });
-                    retryPeer.on('error', () => setBattlePhase('error'));
-                } else {
-                    setBattlePhase('error');
-                }
+                setBattlePhase('error');
             });
         }
         catch (e) {
@@ -930,24 +1184,15 @@ function PanelBlast() {
                 config: { iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
                         { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun.relay.metered.ca:80' },
-                        { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
                     ] },
             });
             peerRef.current = peer;
             const timeout = setTimeout(() => setBattlePhase('error'), 15000);
             peer.on('open', () => {
                 clearTimeout(timeout);
-                const conn = peer.connect(code.trim().toUpperCase());
+                const conn = peer.connect(code.trim());
                 connRef.current = conn;
                 setupConn(conn);
-                // WebRTC接続自体のタイムアウト（20秒）
-                const connTimeout = setTimeout(() => {
-                    if (!conn.open) setBattlePhase('error');
-                }, 20000);
-                conn.on('open', () => clearTimeout(connTimeout));
             });
             peer.on('error', (err) => {
                 console.error('PeerJS error:', err);
@@ -958,7 +1203,54 @@ function PanelBlast() {
             setBattlePhase('error');
         }
     }, []);
+    /* ── CPU対戦: シミュレーションタイマー ── */
+    const startCpuBattle = useCallback((diff) => {
+        if (cpuTimerRef.current) { clearInterval(cpuTimerRef.current); cpuTimerRef.current = null; }
+        ojamaQueueRef.current = 0;
+        setOjamaQueue(0);
+        setOpponentInfo({ score: 0, over: false, ojama: 0 });
+        setBattlePhase('connected');
+        battlePhaseRef.current = 'connected';
+        setBattleMode('cpu');
+        setCpuDifficulty(diff);
+        // ── 3・2・1 カウントダウン後にゲーム開始 ──
+        setCountdown(3);
+        setTimeout(() => setCountdown(2), 1000);
+        setTimeout(() => setCountdown(1), 2000);
+        setTimeout(() => {
+            setCountdown(null);
+            startGame();
+            const configs = [[4800, 4], [5500, 4], [4000, 6]];
+            const [intervalMs, maxChainVal] = configs[diff - 1];
+            const CHAIN_BONUS = [0, 0, 50, 80, 150, 300, 400, 500, 700, 900];
+            let cpuScore = 0;
+            cpuTimerRef.current = setInterval(() => {
+                if (phaseRef.current !== 'play') return;
+                const chain = Math.floor(Math.random() * maxChainVal) + 1;
+                const blocks = chain * 3 + Math.floor(Math.random() * 3);
+                const pts = blocks * 10 + (CHAIN_BONUS[Math.min(chain, CHAIN_BONUS.length - 1)] || 0);
+                cpuScore += pts;
+                const cpuTopRow = Math.max(2, ROWS - Math.floor(cpuScore / 500));
+                setOpponentInfo(p => ({ ...p, score: cpuScore, topRow: cpuTopRow }));
+                if (chain >= 2) {
+                    const ojamaCount = (chain - 1) * 3;
+                    ojamaQueueRef.current += ojamaCount;
+                    setOjamaQueue(q => q + ojamaCount);
+                    setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + ojamaCount }));
+                }
+            }, intervalMs + Math.random() * 600);
+        }, 3000);
+    }, [startGame]);
+    // フェーズ変化でCPUタイマーを停止
+    useEffect(() => {
+        if (battleMode === 'cpu' && phase !== 'play') {
+            if (cpuTimerRef.current) { clearInterval(cpuTimerRef.current); cpuTimerRef.current = null; }
+            if (phase === 'gameover') setOpponentInfo(p => ({ ...p, over: false })); // CPUは生存扱い
+        }
+    }, [phase, battleMode]);
     const leaveBattle = useCallback(() => {
+        if (cpuTimerRef.current) { clearInterval(cpuTimerRef.current); cpuTimerRef.current = null; }
+        setBattleMode(null);
         destroyPeer();
         setBattlePhase('off');
         battlePhaseRef.current = 'off';
@@ -1046,6 +1338,17 @@ function PanelBlast() {
      ═══════════════════════════════════════════════════════════ */
     const boardW = COLS * CELL;
     const boardH = ROWS * CELL;
+    const isBattle = battlePhase === 'connected' || battlePhaseRef.current === 'connected';
+    const isCpuBattle = battleMode === 'cpu' && isBattle;
+    const youLose = isBattle && phase === 'gameover';
+    const youWin = isBattle && opponentInfo.over && phase !== 'gameover';
+    const cpuWon = false; // スコア比較廃止
+    const overlayTitleColor = isBattle ? (youLose ? '#FF3B30' : '#30D158') : (phase === 'timeout' ? '#FF9500' : '#fff');
+    const overlayTitleGlow = isBattle ? (youLose ? '0 0 30px #FF3B30' : '0 0 30px #30D158') : (phase === 'timeout' ? '0 0 30px #FF9500' : '0 0 30px #5AC8FA');
+    const overlayTitleText = isBattle
+        ? (youLose ? '\uD83D\uDE35 YOU LOSE' : youWin ? '\uD83C\uDFC6 YOU WIN!' : 'GAME OVER')
+        : (phase === 'gameover' ? 'GAME OVER' : phase === 'timeout' ? '\u23F1 TIME UP!' : 'PANEL BLAST');
+    const cpuDiffLabel = ['EASY', 'NORMAL', 'HARD'][cpuDifficulty - 1] || 'NORMAL';
     return (React.createElement("div", { style: S.page },
         React.createElement("style", null, KEYFRAMES),
         React.createElement("header", { style: S.header },
@@ -1076,8 +1379,11 @@ function PanelBlast() {
                                 transition: 'width 0.9s linear, background 0.3s',
                             } })))),
                 React.createElement("div", { style: S.scorePair },
-                    React.createElement(ScoreCard, { icon: "⚡", label: "SCORE", value: score, color: mode === 'timeattack' ? '#FF9500' : '#FFD60A' }),
-                    React.createElement(ScoreCard, { icon: "🏆", label: mode === 'timeattack' ? 'BEST' : 'BEST', value: mode === 'timeattack' ? bestTA : best, color: mode === 'timeattack' ? '#FF9500' : '#5AC8FA' }))),
+                    battlePhaseRef.current === 'connected'
+                        ? null
+                        : React.createElement(React.Fragment, null,
+                            React.createElement(ScoreCard, { icon: "⚡", label: "SCORE", value: score, color: mode === 'timeattack' ? '#FF9500' : '#FFD60A' }),
+                            React.createElement(ScoreCard, { icon: "🏆", label: mode === 'timeattack' ? 'BEST' : 'BEST', value: mode === 'timeattack' ? bestTA : best, color: mode === 'timeattack' ? '#FF9500' : '#5AC8FA' })))),
             maxChain > 1 && (React.createElement("div", { style: S.chainBadge },
                 "MAX \u00D7",
                 maxChain))),
@@ -1204,7 +1510,9 @@ function PanelBlast() {
                     grid.map((row, r) => row.map((cell, c) => {
                         const key = `${r},${c}`;
                         const pal = cell ? PALETTE[cell.color] : null;
-                        const flashing = !!(cell === null || cell === void 0 ? void 0 : cell.flashing); // encoded in grid cell — atomic with setGrid
+                        const flashing = !!(cell === null || cell === void 0 ? void 0 : cell.flashing);
+                        const isOjama = (cell === null || cell === void 0 ? void 0 : cell.color) === 'ojama';
+                        if (isOjama) return null; // お邪魔はグループ単位で後から描画
                         return (React.createElement("div", { key: key, className: flashing ? "cell-flash" : "", style: (() => {
                                 var _a, _b;
                                 const grabbed = dragCell && dragCell.r === r && dragCell.c === c;
@@ -1244,11 +1552,110 @@ function PanelBlast() {
                                     animationDelay: flashing
                                         ? ((_b = cell === null || cell === void 0 ? void 0 : cell.flashIndex) !== null && _b !== void 0 ? _b : 0) * STEP_MS + "ms"
                                         : pinch
-                                            ? ((r * COLS + c) * 40) % 400 + "ms" // 各セルをずらして個別に揺れる
+                                            ? ((r * COLS + c) * 40) % 400 + "ms"
                                             : "0ms",
                                 };
                             })(), onPointerDown: (e) => onPointerDown(e, r, c) }, pal === null || pal === void 0 ? void 0 : pal.icon));
-                    }))),
+                    })),
+                    // ── お邪魔パネル: ojamaIdグループを矩形1枚として描画 ──
+                    (() => {
+                        // ojamaIdごとにセルを収集
+                        const groups = new Map();
+                        grid.forEach((row, r) => row.forEach((cell, c) => {
+                            if ((cell === null || cell === void 0 ? void 0 : cell.color) === 'ojama') {
+                                const id = cell.ojamaId || `__solo_${r}_${c}`;
+                                if (!groups.has(id)) groups.set(id, []);
+                                groups.get(id).push({ r, c, cell });
+                            }
+                        }));
+                        const bars = [];
+                        groups.forEach((cells, id) => {
+                            const minR = Math.min(...cells.map(x => x.r));
+                            const maxR = Math.max(...cells.map(x => x.r));
+                            const minC = Math.min(...cells.map(x => x.c));
+                            const maxC = Math.max(...cells.map(x => x.c));
+                            const firstCell = cells[0].cell;
+                            const flashing = cells.some(x => x.cell.flashing);
+                            const isThawing = cells.some(x => x.cell.isThawing);
+                            const flashIdx = firstCell.flashIndex || 0;
+                            const gx = minC * CELL + 3;
+                            const gy = minR * CELL + 3;
+                            const gw = (maxC - minC + 1) * CELL - 6;
+                            const gh = (maxR - minR + 1) * CELL - 6;
+                            const numCols = maxC - minC + 1;
+                            const numRows = maxR - minR + 1;
+                            bars.push(React.createElement("div", {
+                                key: `obar-${id}`,
+                                className: flashing ? "cell-flash" : isThawing ? "ojama-thaw" : "",
+                                onPointerDown: (e) => onPointerDown(e, maxR, minC),
+                                style: {
+                                    position: 'absolute',
+                                    left: gx, top: gy,
+                                    width: gw, height: gh,
+                                    borderRadius: 10,
+                                    background: (() => { const t = OJAMA_THEMES[ojamaTheme] || OJAMA_THEMES.pink; return `linear-gradient(180deg, ${t.hi} 0%, ${t.mid} 40%, ${t.lo} 100%)`; })(),
+                                    border: (() => { const t = OJAMA_THEMES[ojamaTheme] || OJAMA_THEMES.pink; return `2px solid ${t.border}`; })(),
+                                    boxShadow: (() => { const t = OJAMA_THEMES[ojamaTheme] || OJAMA_THEMES.pink; return `0 2px 12px ${t.lo}88, inset 0 1px 0 #ffffff44, inset 0 -2px 0 #00000033`; })(),
+                                    zIndex: 2,
+                                    cursor: 'grab',
+                                    userSelect: 'none',
+                                    touchAction: 'none',
+                                    overflow: 'hidden',
+                                    animationDelay: flashing ? flashIdx * STEP_MS + 'ms' : '0ms',
+                                }
+                            },
+                                // ドット格子模様
+                                React.createElement("div", {
+                                    style: {
+                                        position: 'absolute', inset: 0,
+                                        display: 'grid',
+                                        gridTemplateColumns: `repeat(${numCols * 2}, 1fr)`,
+                                        gridTemplateRows: `repeat(${numRows * 2}, 1fr)`,
+                                        padding: 6,
+                                        gap: 0,
+                                        pointerEvents: 'none',
+                                    }
+                                },
+                                    ...Array.from({ length: numCols * 2 * numRows * 2 }, (_, i) =>
+                                        React.createElement("div", {
+                                            key: i,
+                                            style: {
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            }
+                                        },
+                                            React.createElement("div", {
+                                                style: {
+                                                    width: 4, height: 4, borderRadius: '50%',
+                                                    background: 'rgba(255,255,255,0.3)',
+                                                }
+                                            })
+                                        )
+                                    )
+                                ),
+                                // 顔（ブロック中央）
+                                React.createElement("div", {
+                                    style: {
+                                        position: 'absolute',
+                                        left: '50%', top: '50%',
+                                        transform: 'translate(-50%, -50%)',
+                                        display: 'flex', flexDirection: 'column',
+                                        alignItems: 'center', gap: 5,
+                                        pointerEvents: 'none',
+                                        zIndex: 3,
+                                    }
+                                },
+                                    // 目
+                                    React.createElement("div", { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                                        React.createElement("div", { style: { width: 8, height: 8, background: '#5A1030', borderRadius: 2, boxShadow: '0 0 3px #fff6' } }),
+                                        React.createElement("div", { style: { width: 8, height: 8, background: '#5A1030', borderRadius: 2, boxShadow: '0 0 3px #fff6' } })
+                                    ),
+                                    // 口
+                                    React.createElement("div", { style: { width: 10, height: 4, borderRadius: '0 0 5px 5px', background: '#5A1030', opacity: 0.8 } })
+                                )
+                            ));
+                        });
+                        return bars;
+                    })()),
                 phase === "play" && (React.createElement("div", { className: "cursor-glow", style: {
                         position: "absolute",
                         left: cursor.c * CELL + 1,
@@ -1283,30 +1690,57 @@ function PanelBlast() {
                         " pts"))),
                 phase !== "play" && (React.createElement("div", { style: S.overlay },
                     React.createElement("div", { style: S.overlayCard },
-                        React.createElement("div", { style: { ...S.overlayTitle,
-                                color: phase === "timeout" ? "#FF9500" : "#fff",
-                                textShadow: phase === "timeout" ? "0 0 30px #FF9500" : "0 0 30px #5AC8FA" } }, phase === "gameover" ? "GAME OVER"
-                            : phase === "timeout" ? "⏱ TIME UP!"
-                                : "PANEL BLAST"),
-                        (phase === "gameover" || phase === "timeout") && (React.createElement(React.Fragment, null,
+                        React.createElement("div", { style: { ...S.overlayTitle, color: overlayTitleColor, textShadow: overlayTitleGlow } }, overlayTitleText),
+                        isCpuBattle && null,
+                        !isCpuBattle && (phase === 'gameover' || phase === 'timeout') && React.createElement(React.Fragment, null,
                             React.createElement("div", { style: S.overlayScore }, String(score).padStart(7, "0")),
-                            phase === "timeout" && bestTA > 0 && score >= bestTA && (React.createElement("div", { style: S.overlayNewBest }, "\uD83C\uDFC6 New Best!")))),
-                        React.createElement("div", { style: S.overlayHint }, phase === "gameover" ? "Blocks reached the top!"
-                            : phase === "timeout" ? `1分間スコアアタック終了！ベスト: ${bestTA.toLocaleString()} pts`
-                                : ""),
-                        phase === "start" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 8 } },
+                            phase === 'timeout' && bestTA > 0 && score >= bestTA && React.createElement("div", { style: S.overlayNewBest }, "\uD83C\uDFC6 New Best!")),
+                        React.createElement("div", { style: S.overlayHint },
+                            isCpuBattle ? (cpuDiffLabel + " CPU\u6226 " + (phase === 'gameover' ? "\u2014 \u30D6\u30ED\u30C3\u30AF\u304C\u5929\u4E95\u306B\uFF01" : ""))
+                            : phase === "gameover" ? "Blocks reached the top!"
+                            : phase === "timeout" ? ("1\u5206\u9593\u30B9\u30B3\u30A2\u30A2\u30BF\u30C3\u30AF\u7D42\u4E86\uFF01\u30D9\u30B9\u30C8: " + bestTA.toLocaleString() + " pts")
+                            : ""),
+                        phase === "start" && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 8 } },
                             React.createElement("div", { style: { fontSize: 11, color: "#444477", letterSpacing: 2, marginBottom: 4 } }, "MODE SELECT"),
-                            React.createElement("button", { style: { ...S.overlayBtn }, onClick: startGame, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\uD83C\uDFAE FREE PLAY"),
-                            React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#FF9500,#FF3B30)" }, onClick: startTimeAttack, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\u23F1 1MIN SCORE ATTACK"),
-                            React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#FF2D55,#8B001A)" }, onClick: () => setBattlePhase("lobby"), onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\u2694 BATTLE (P2P)"))),
-                        phase !== "start" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 4 } },
-                            (phase === "gameover" || phase === "timeout") && (React.createElement("button", { style: { ...S.overlayBtn, background: (phase === "timeout" || mode === "timeattack") ? "linear-gradient(135deg,#FF9500,#FF3B30)" : undefined }, onClick: (phase === "timeout" || mode === "timeattack") ? startTimeAttack : startGame, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" },
-                                "\u25B6 ",
-                                phase === "timeout" ? "PLAY AGAIN" : "PLAY AGAIN")),
-                            React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#3A3A6A,#1A1A3A)", fontSize: 12 }, onClick: () => { setPhase('start'); phaseRef.current = 'start'; }, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.3)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\u21A9 MODE SELECT")))))))),
+                            React.createElement("button", { style: { ...S.overlayBtn }, onClick: startGame, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\uD83C\uDFAE FREE PLAY"),
+                            React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#FF9500,#FF3B30)" }, onClick: startTimeAttack, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u23F1 1MIN SCORE ATTACK"),
+                            React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#FF2D55,#8B001A)" }, onClick: function(){ setBattlePhase("mode-select"); }, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u2694 BATTLE")),
+                        phase !== "start" && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 } },
+                            isCpuBattle && React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#BF5AF2,#581C87)" }, onClick: function(){ startCpuBattle(cpuDifficulty); }, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\uD83E\uDD16 \u3082\u3046\u4E00\u5EA6 (" + cpuDiffLabel + ")"),
+                            isCpuBattle && React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#1A1A3A,#0D0D25)", fontSize: 12 }, onClick: function(){ setBattlePhase('cpu-select'); setBattleMode(null); setPhase('start'); phaseRef.current = 'start'; }, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.3)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u96E3\u6613\u5EA6\u3092\u5909\u3048\u308B"),
+                            !isCpuBattle && (phase === "gameover" || phase === "timeout") && React.createElement("button", { style: { ...S.overlayBtn, background: (phase === "timeout" || mode === "timeattack") ? "linear-gradient(135deg,#FF9500,#FF3B30)" : undefined }, onClick: (phase === "timeout" || mode === "timeattack") ? startTimeAttack : startGame, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u25B6 PLAY AGAIN"),
+                            React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#3A3A6A,#1A1A3A)", fontSize: 12 }, onClick: function(){ if (battleMode === 'cpu') { if (cpuTimerRef.current) { clearInterval(cpuTimerRef.current); cpuTimerRef.current = null; } setBattleMode(null); setBattlePhase('off'); battlePhaseRef.current = 'off'; } setPhase('start'); phaseRef.current = 'start'; }, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.3)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u21A9 MODE SELECT"))))))),
         battlePhase !== "off" && phase === "start" && (React.createElement("div", { style: { ...S.overlay, position: "fixed", zIndex: 100 } },
             React.createElement("div", { style: { ...S.overlayCard, maxWidth: 300 } },
                 React.createElement("div", { style: { ...S.overlayTitle, fontSize: 22, marginBottom: 12 } }, "\u2694 BATTLE"),
+                battlePhase === "mode-select" && (React.createElement(React.Fragment, null,
+                    React.createElement("div", { style: S.overlayHint }, "\u5BFE\u6226\u30E2\u30FC\u30C9\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044"),
+                    React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 8 } },
+                        React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#0A84FF,#003380)", fontSize: 14 },
+                            onClick: () => setBattlePhase("lobby"),
+                            onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)",
+                            onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" },
+                            "\uD83D\uDC65 vs \u30D7\u30EC\u30A4\u30E4\u30FC (P2P)"),
+                        React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#BF5AF2,#581C87)", fontSize: 14 },
+                            onClick: () => setBattlePhase("cpu-select"),
+                            onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)",
+                            onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" },
+                            "\uD83E\uDD16 vs CPU")))),
+                battlePhase === "cpu-select" && (React.createElement(React.Fragment, null,
+                    React.createElement("div", { style: S.overlayHint }, "CPU\u306E\u96E3\u6613\u5EA6\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044"),
+                    React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 9, marginTop: 8 } },
+                        [["EASY", "linear-gradient(135deg,#30D158,#14532D)", "\u9023\u9396\u5C11\u3081\u30FB\u304A\u90AA\u9B54\u30CE\u30F3\u30D3\u30EA", 1],
+                         ["NORMAL", "linear-gradient(135deg,#FF9500,#78450B)", "\u30D0\u30E9\u30F3\u30B9\u306E\u3068\u308C\u305F\u76F8\u624B", 2],
+                         ["HARD", "linear-gradient(135deg,#FF2D55,#8B001A)", "\u9023\u9396\u591A\u3081\u30FB\u304A\u90AA\u9B54\u6FC0\u3057\u3044", 3]]
+                        .map(([label, bg, hint, diff]) =>
+                            React.createElement("button", {
+                                key: diff,
+                                style: { ...S.overlayBtn, background: bg, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "10px 20px" },
+                                onClick: () => startCpuBattle(diff),
+                                onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)",
+                                onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" },
+                                React.createElement("span", { style: { fontSize: 14, fontWeight: 900, letterSpacing: 2 } }, label),
+                                React.createElement("span", { style: { fontSize: 10, color: "rgba(255,255,255,0.7)", fontWeight: 400, letterSpacing: 0 } }, hint)))))),
                 battlePhase === "lobby" && (React.createElement(React.Fragment, null,
                     React.createElement("div", { style: S.overlayHint },
                         "\u76F8\u624B\u3068\u63A5\u7D9A\u3057\u3066\u30EA\u30A2\u30EB\u30BF\u30A4\u30E0\u5BFE\u6226\uFF01",
@@ -1315,7 +1749,7 @@ function PanelBlast() {
                     React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 } },
                         React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#30D158,#14532D)" }, onClick: hostBattle, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\uD83C\uDFE0 \u90E8\u5C4B\u3092\u4F5C\u308B\uFF08\u30DB\u30B9\u30C8\uFF09"),
                         React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-                            React.createElement("input", { placeholder: "\u30EB\u30FC\u30E0\u30B3\u30FC\u30C9\u3092\u5165\u529B", value: joinCode, onChange: e => setJoinCode(e.target.value.toUpperCase()), style: { flex: 1, background: "#0D0D25", border: "1px solid #1E1E4A",
+                            React.createElement("input", { placeholder: "\u30EB\u30FC\u30E0\u30B3\u30FC\u30C9\u3092\u5165\u529B", value: joinCode, onChange: e => setJoinCode(e.target.value), style: { flex: 1, background: "#0D0D25", border: "1px solid #1E1E4A",
                                     borderRadius: 6, color: "#fff", padding: "8px 10px",
                                     fontFamily: "inherit", fontSize: 11, outline: "none" } }),
                             React.createElement("button", { style: { ...S.overlayBtn, padding: "8px 12px", fontSize: 12 }, onClick: () => joinBattle(joinCode), onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.2)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\u53C2\u52A0"))))),
@@ -1338,19 +1772,48 @@ function PanelBlast() {
                         React.createElement("br", null),
                         React.createElement("span", { style: { fontSize: 10, color: "#666699" } }, "(PeerJS\u30B5\u30FC\u30D0\u30FC\u3078\u306E\u63A5\u7D9A\u304C\u5FC5\u8981\u3067\u3059)")),
                     React.createElement("button", { style: S.overlayBtn, onClick: () => setBattlePhase("lobby") }, "\u518D\u8A66\u884C"))),
-                React.createElement("button", { style: { ...S.overlayBtn, background: "#1A1A3A", marginTop: 12, fontSize: 11 }, onClick: leaveBattle, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.3)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, "\u21A9 \u623B\u308B")))),
+                React.createElement("button", { style: { ...S.overlayBtn, background: "#1A1A3A", marginTop: 12, fontSize: 11 }, onClick: () => { if (battlePhase === 'lobby' || battlePhase === 'cpu-select') { setBattlePhase('mode-select'); } else { leaveBattle(); } }, onMouseEnter: e => e.currentTarget.style.filter = "brightness(1.3)", onMouseLeave: e => e.currentTarget.style.filter = "brightness(1)" }, battlePhase === 'mode-select' ? "\u21A9 \u623B\u308B" : battlePhase === 'lobby' || battlePhase === 'cpu-select' ? "\u21A9 \u30E2\u30FC\u30C9\u9078\u629E" : "\u21A9 \u623B\u308B")))),
+        countdown !== null && (React.createElement("div", {
+            key: "cdoverlay",
+            style: {
+                position: "fixed", inset: 0, zIndex: 200,
+                background: "rgba(0,0,12,0.75)",
+                backdropFilter: "blur(4px)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                pointerEvents: "none",
+            }
+        },
+            React.createElement("div", {
+                key: countdown,
+                className: "countdown-num",
+                style: {
+                    position: "absolute", left: "50%", top: "50%",
+                    fontSize: 160, fontWeight: 900,
+                    fontFamily: "'Courier New', monospace",
+                    color: countdown === 3 ? "#30D158" : countdown === 2 ? "#FF9500" : "#FF3B30",
+                    textShadow: countdown === 3
+                        ? "0 0 60px #30D158, 0 0 120px #30D15866"
+                        : countdown === 2
+                        ? "0 0 60px #FF9500, 0 0 120px #FF950066"
+                        : "0 0 60px #FF3B30, 0 0 120px #FF3B3066",
+                    lineHeight: 1,
+                    userSelect: "none",
+                }
+            }, countdown)
+        )),
         battlePhase === "connected" && phase === "play" && (React.createElement("div", { style: S.opponentHud },
-            React.createElement("div", { style: S.opponentTitle }, "\u2694 \u76F8\u624B"),
-            React.createElement("div", { style: { color: "#FF9500", fontSize: 16, fontWeight: 700, letterSpacing: 1, fontFamily: "monospace" } }, String(opponentInfo.score).padStart(7, "0")),
-            opponentInfo.ojama > 0 && (React.createElement("div", { style: { fontSize: 10, color: "#FF3B30", marginTop: 2 } },
-                "\uD83D\uDC80 ojama\u00D7",
-                opponentInfo.ojama)),
-            opponentInfo.over && (React.createElement("div", { style: { fontSize: 11, color: "#30D158", marginTop: 4 } }, "\u2713 OVER")),
-            ojamaQueue > 0 && (React.createElement("div", { style: { fontSize: 10, color: "#FF2D55", marginTop: 4 } },
-                "\u53D7\u4FE1 \u2715",
-                ojamaQueue)),
-            React.createElement("button", { style: { ...S.btn, fontSize: 9, padding: "4px 6px", marginTop: 8,
-                    background: "#1A1A3A" }, onClick: leaveBattle }, "\u5207\u65AD"))),
+            React.createElement("div", { style: { fontSize: 7, color: '#FF2D55', textAlign: 'center', letterSpacing: 0, marginBottom: 3, lineHeight: 1.2, whiteSpace: 'nowrap' } },
+                battleMode === 'cpu' ? ('CPU ' + 'ENH'[cpuDifficulty-1]) : "\u76F8\u624B"
+            ),
+            React.createElement("div", { style: { position: 'relative', width: 12, height: 100, background: 'rgba(0,0,0,0.4)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', overflow: 'hidden' } },
+                React.createElement("div", { style: (() => {
+                    const topRow = opponentInfo.topRow != null ? opponentInfo.topRow : ROWS;
+                    const pct = Math.max(0, Math.min(1, (ROWS - topRow) / (ROWS - 1)));
+                    const color = pct < 0.4 ? '#30D158' : pct < 0.7 ? '#FF9500' : '#FF3B30';
+                    return { position: 'absolute', left: 0, bottom: 0, width: '100%', height: (pct * 100) + '%', background: 'linear-gradient(0deg,' + color + '88,' + color + ')', borderRadius: 6, transition: 'height 0.4s ease, background 0.4s ease', boxShadow: pct > 0.7 ? '0 0 8px ' + color : 'none' };
+                })() }),
+                ...[0.33, 0.66].map((p, i) => React.createElement("div", { key: i, style: { position: 'absolute', left: 0, bottom: (p * 100) + '%', width: '100%', height: 1, background: 'rgba(255,255,255,0.2)' } }))
+            ))),
         React.createElement("div", { style: S.controlBar },
             React.createElement("div", { style: S.speedRow },
                 React.createElement("span", { style: S.speedLabel }, "\u2B06 SPEED"),
@@ -1379,9 +1842,28 @@ function PanelBlast() {
                         fontSize: 10,
                     }, onClick: () => setPinchBgmOn(v => !v), title: "\u30D4\u30F3\u30C1BGM on/off" }, pinchBgmOn ? "🚨 PINCH" : "🔕 PINCH"),
                 React.createElement("button", { style: { ...S.btn, background: "linear-gradient(135deg,#30D158,#14532D)" }, onClick: doSwap, title: "Swap (Space)" }, "\"\u21C4\" SWAP"),
-                React.createElement("button", { style: { ...S.btn, background: "linear-gradient(135deg,#FF3B30,#7F1D1D)" }, onClick: () => mode === "timeattack" ? startTimeAttack() : startGame(), title: "Reset game" }, "\"\u21BA\" RESET")))));
+                React.createElement("button", { style: { ...S.btn, background: "linear-gradient(135deg,#FF3B30,#7F1D1D)" }, onClick: () => mode === "timeattack" ? startTimeAttack() : startGame(), title: "Reset game" }, "\"\u21BA\" RESET")),
+            React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center', marginTop: 6, flexWrap: 'wrap', maxWidth: 320 } },
+                React.createElement("span", { style: { fontSize: 9, color: '#556', letterSpacing: 1, width: '100%', textAlign: 'center' } }, "\u304A\u90AA\u9B54\u8272:"),
+                OJAMA_THEME_KEYS.map(key => {
+                    const t = OJAMA_THEMES[key];
+                    const active = ojamaTheme === key;
+                    return React.createElement("button", {
+                        key,
+                        title: t.name,
+                        onClick: () => setOjamaTheme(key),
+                        style: {
+                            width: 22, height: 22, borderRadius: 5, border: 'none', cursor: 'pointer', padding: 0,
+                            background: `linear-gradient(135deg, ${t.hi}, ${t.mid})`,
+                            outline: active ? `2px solid #fff` : `2px solid transparent`,
+                            outlineOffset: 1,
+                            boxShadow: active ? `0 0 7px ${t.mid}` : 'none',
+                            transition: 'outline 0.1s, box-shadow 0.1s, transform 0.1s',
+                            transform: active ? 'scale(1.25)' : 'scale(1)',
+                        }
+                    });
+                })))));
 }
-/* ── Small sub-component: Score card ── */
 function ScoreCard({ icon, label, value, color }) {
     return (React.createElement("div", { style: SC.card },
         React.createElement("div", { style: SC.lbl },
@@ -1557,14 +2039,14 @@ const S = {
     },
     btnRow: { display: "flex", gap: 7 },
     opponentHud: {
-        position: 'fixed', top: 16, right: 16, zIndex: 50,
-        background: '#0D0D25', border: '1px solid #FF2D55',
-        borderRadius: 10, padding: '10px 14px', textAlign: 'center',
-        boxShadow: '0 0 20px #FF2D5533',
-        fontFamily: "'Courier New', monospace",
+        position: 'fixed', top: 16, right: 8, zIndex: 50,
+        background: 'rgba(0,0,0,0.25)',
+        borderRadius: 8, padding: '4px',
     },
     opponentTitle: {
-        fontSize: 9, letterSpacing: 2, color: '#FF2D55', marginBottom: 4,
+        fontSize: 7, letterSpacing: 0, color: '#FF2D55',
+        writingMode: 'vertical-rl', textOrientation: 'mixed',
+        lineHeight: 1.2, textAlign: 'center',
     },
     btn: {
         border: "none",
@@ -1598,6 +2080,17 @@ const KEYFRAMES = `
   .cell-flash {
     animation: cellFlash 0.13s linear infinite;
     pointer-events: none;
+  }
+
+  /* ── おじゃま還元（Thawing）: ゆっくり明滅 ── */
+  @keyframes ojamaThaw {
+    0%,100% { opacity:1;   filter: brightness(1)   saturate(1);   }
+    25%     { opacity:0.6; filter: brightness(2.2) saturate(2);   }
+    50%     { opacity:1;   filter: brightness(1)   saturate(1);   }
+    75%     { opacity:0.6; filter: brightness(2.2) saturate(2);   }
+  }
+  .ojama-thaw {
+    animation: ojamaThaw 0.35s ease-in-out infinite;
   }
 
   /* ── ピンチ: 天井まで2マスで全パネルが揺れる ── */
@@ -1650,6 +2143,18 @@ const KEYFRAMES = `
   }
 
   * { box-sizing: border-box; }
+
+  /* ── カウントダウン: ポップイン→フェードアウト ── */
+  @keyframes countdownPop {
+    0%   { opacity:0; transform: translate(-50%,-50%) scale(0.4); }
+    20%  { opacity:1; transform: translate(-50%,-50%) scale(1.15); }
+    50%  { opacity:1; transform: translate(-50%,-50%) scale(1);    }
+    80%  { opacity:1; transform: translate(-50%,-50%) scale(1);    }
+    100% { opacity:0; transform: translate(-50%,-50%) scale(1.3);  }
+  }
+  .countdown-num {
+    animation: countdownPop 0.9s cubic-bezier(.22,1,.36,1) forwards;
+  }
 `;
 // cache bust 1774785382
 
