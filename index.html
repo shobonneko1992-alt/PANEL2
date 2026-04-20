@@ -454,6 +454,7 @@ function PanelBlast() {
     //  (swaps during FALLING are applied immediately to gridRef — tickFall picks them up)
     const flashingRef = useRef(false);
     const fallingRef = useRef(false);
+
     const chainLvlRef = useRef(0);
     const cycleRunning = useRef(false);
     const cycleIdRef = useRef(0);
@@ -1023,11 +1024,32 @@ function PanelBlast() {
             const right = gridRef.current[r][c + 1];
             if (!left && !right)
                 return;
-            const ng = gridRef.current.map(row => [...row]);
-            [ng[r][c], ng[r][c + 1]] = [ng[r][c + 1], ng[r][c]];
-            setGrid(ng);
-            gridRef.current = ng;
-            cycleRunning.current = true; // アクティブ連鎖中も上昇停止
+            let g = gridRef.current.map(row => [...row]);
+            [g[r][c], g[r][c + 1]] = [g[r][c + 1], g[r][c]];
+            gridRef.current = g;
+            setGrid(g);
+            cycleRunning.current = true;
+            // thaw中のスワップ: 対象2列を150ms/段で落下（タイマー1本・競合なし）
+            if (fallingRef.current && !flashingRef.current) {
+                const snapId = cycleIdRef.current;
+                const swapCols = [c, c + 1];
+                const colDrop = () => {
+                    if (cycleIdRef.current !== snapId) return;
+                    const cur = gridRef.current.map(row => [...row]);
+                    let moved = false;
+                    for (const col of swapCols) {
+                        for (let row = ROWS - 1; row > 0; row--) {
+                            if (!cur[row][col] && cur[row-1][col] && cur[row-1][col].color !== 'ojama') {
+                                cur[row][col] = cur[row-1][col];
+                                cur[row-1][col] = null;
+                                moved = true;
+                            }
+                        }
+                    }
+                    if (moved) { gridRef.current = cur; setGrid(cur); setTimeout(colDrop, 150); }
+                };
+                setTimeout(colDrop, 150);
+            }
             return;
         }
         // ── IDLE: apply immediately and start a new cycle ───────────
