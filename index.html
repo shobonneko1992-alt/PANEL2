@@ -44,7 +44,15 @@ function generateShortID() {
    ═══════════════════════════════════════════════════════════════ */
 const COLS = 6;
 const ROWS = 12;
-const CELL = 46; // px per block (board = 276 × 552)
+// CELL をタブレット・スマホ両対応で動的計算
+// 横: (画面幅 - 左右UI余白60px) / COLS
+// 縦: (画面高 - ヘッダー130px) / ROWS
+// 下限44・上限76でクランプ
+const CELL = (() => {
+    const byW = Math.floor((window.innerWidth  - 60) / COLS);
+    const byH = Math.floor((window.innerHeight - 130) / ROWS);
+    return Math.max(44, Math.min(76, Math.min(byW, byH)));
+})();
 const FLASH_MS = 650; // flash animation window
 const CHAIN_DELAY = 180; // gap between chain-cycle steps
 const STEP_MS = 280; // ms between each cell deletion in a match
@@ -1990,10 +1998,14 @@ const S = {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
+        justifyContent: "flex-start",
+        paddingTop: Math.max(8, Math.floor(window.innerHeight * 0.02)),
+        paddingBottom: 16,
+        paddingLeft: 16,
+        paddingRight: 16,
         fontFamily: "'Courier New', Courier, monospace",
         color: "#fff",
+        boxSizing: "border-box",
     },
     /* header */
     header: {
@@ -2005,8 +2017,8 @@ const S = {
         justifyContent: "center",
     },
     titleBlock: { display: "flex", flexDirection: "column", lineHeight: 1 },
-    titleTop: { fontSize: 30, fontWeight: 900, letterSpacing: 6, color: "#fff", textShadow: "0 0 22px #5AC8FA" },
-    titleBot: { fontSize: 16, fontWeight: 900, letterSpacing: 10, color: "#FFD60A", textShadow: "0 0 14px #FFD60A88" },
+    titleTop: { fontSize: Math.round(CELL * 0.65), fontWeight: 900, letterSpacing: 6, color: "#fff", textShadow: "0 0 22px #5AC8FA" },
+    titleBot: { fontSize: Math.round(CELL * 0.35), fontWeight: 900, letterSpacing: 10, color: "#FFD60A", textShadow: "0 0 14px #FFD60A88" },
     scorePair: { display: "flex", gap: 8 },
     progressWrap: {
         position: "relative", width: "100%", maxWidth: 230,
@@ -2030,7 +2042,7 @@ const S = {
         borderRadius: 10, padding: '6px 20px', minWidth: 130,
     },
     timerDigits: {
-        fontSize: 38, fontWeight: 900, letterSpacing: 4,
+        fontSize: Math.round(CELL * 0.82), fontWeight: 900, letterSpacing: 4,
         fontFamily: "'Courier New',monospace", lineHeight: 1,
         transition: 'color 0.3s, text-shadow 0.3s',
     },
@@ -2071,14 +2083,14 @@ const S = {
         whiteSpace: "nowrap",
     },
     chainText: {
-        fontSize: 26,
+        fontSize: Math.round(CELL * 0.56),
         fontWeight: 900,
         color: "#FFD60A",
         textShadow: "0 0 24px #FFD60A, 0 2px 0 rgba(0,0,0,0.6)",
         letterSpacing: 2,
     },
     chainPts: {
-        fontSize: 16,
+        fontSize: Math.round(CELL * 0.35),
         color: "#fff",
         textShadow: "0 0 10px rgba(255,255,255,0.5)",
     },
