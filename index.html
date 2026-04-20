@@ -20,7 +20,7 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
-  <script async src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script>
 const { useState, useEffect, useCallback, useRef } = React;
 
@@ -1172,8 +1172,8 @@ function PanelBlast() {
                 setOpponentInfo(p => ({ ...p, over: true }));
             }
             if (data.type === 'start') {
-                // ホストから「試合開始」の合図
-                startBattleGame();
+                // ホストから「試合開始」の合図（二重起動防止）
+                if (phaseRef.current !== 'play') startBattleGame();
             }
         });
         conn.on('close', () => {
@@ -1198,11 +1198,15 @@ function PanelBlast() {
         setBattlePhase('hosting');
         setMyPeerId('');
         try {
-            // PeerJS を CDN から動的ロード
-            // PeerJS は index.html の SCRIPT_TAG タグで読み込み済み
+            // defer で読み込み済みのはずだが念のため最大5秒リトライ
             const Peer = window.Peer;
             if (!Peer) {
-                setBattlePhase('error');
+                let retries = 0;
+                const wait = setInterval(() => {
+                    retries++;
+                    if (window.Peer) { clearInterval(wait); hostBattle(); }
+                    else if (retries > 10) { clearInterval(wait); setBattlePhase('error'); }
+                }, 500);
                 return;
             }
             const myID = generateShortID();
@@ -1214,20 +1218,29 @@ function PanelBlast() {
                     ] },
             });
             peerRef.current = peer;
-            // 15秒でタイムアウト
+            // 30秒でタイムアウト
             const timeout = setTimeout(() => {
                 setBattlePhase('error');
-            }, 15000);
+            }, 30000);
             peer.on('open', () => {
                 clearTimeout(timeout);
             });
             peer.on('connection', conn => {
                 connRef.current = conn;
                 setupConn(conn);
-                setTimeout(() => {
-                    conn.send({ type: 'start' });
+                let started = false;
+                const doStart = () => {
+                    if (started) return; // 二重起動防止
+                    started = true;
+                    // ホスト側でconn.on('open')が発火しない場合もここで確実にconnected状態にする
+                    setBattlePhase('connected');
+                    battlePhaseRef.current = 'connected';
+                    if (conn.open) conn.send({ type: 'start' });
                     startBattleGame();
-                }, 500);
+                };
+                conn.on('open', () => setTimeout(doStart, 300));
+                // open が来ない PeerJSバージョン対策フォールバック
+                setTimeout(() => doStart(), 2000);
             });
             peer.on('error', (err) => {
                 console.error('PeerJS error:', err);
@@ -1246,7 +1259,12 @@ function PanelBlast() {
         try {
             const Peer = window.Peer;
             if (!Peer) {
-                setBattlePhase('error');
+                let retries = 0;
+                const wait = setInterval(() => {
+                    retries++;
+                    if (window.Peer) { clearInterval(wait); joinBattle(code); }
+                    else if (retries > 10) { clearInterval(wait); setBattlePhase('error'); }
+                }, 500);
                 return;
             }
             const peer = new Peer(undefined, {
@@ -1256,12 +1274,20 @@ function PanelBlast() {
                     ] },
             });
             peerRef.current = peer;
-            const timeout = setTimeout(() => setBattlePhase('error'), 15000);
+            const timeout = setTimeout(() => setBattlePhase('error'), 30000);
             peer.on('open', () => {
                 clearTimeout(timeout);
-                const conn = peer.connect(code.trim());
+                const conn = peer.connect(code.trim(), { reliable: true });
                 connRef.current = conn;
                 setupConn(conn);
+                // 'start' が届かない場合のフォールバック（5秒後）
+                conn.on('open', () => {
+                    setTimeout(() => {
+                        if (phaseRef.current !== 'play') {
+                            startBattleGame();
+                        }
+                    }, 5000);
+                });
             });
             peer.on('error', (err) => {
                 console.error('PeerJS error:', err);
