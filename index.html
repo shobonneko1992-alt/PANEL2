@@ -768,22 +768,29 @@ function PanelBlast() {
             }
         }
         // ── 消去数ベースのおじゃま送信 (4個消し以上) ──
-        // 4個消し→1段(COLS)、5個消し以上→2段(COLS*2)
+        // 4個消し  → 3マス×1段（両端ランダム）
+        // 5個消し  → 3マス×2段（両端ランダム）
+        // 6個消し以上 → 6マス×1段（全幅）
         if (isBattle) {
-            // 4個消し→3マス×1段、5個消し以上→3マス×2段（中央3列配置）
-            let matchOjama = 0;
-            if (matches.size === 4)     matchOjama = 3;      // 3マス×1行
-            else if (matches.size >= 5) matchOjama = 6;      // 3マス×2行
+            let matchOjama = 0, matchWidth = COLS, matchCol = 0;
+            if (matches.size === 4) {
+                matchOjama = 3; matchWidth = 3;
+                matchCol = Math.random() < 0.5 ? 0 : 3;
+            } else if (matches.size === 5) {
+                matchOjama = 6; matchWidth = 3;
+                matchCol = Math.random() < 0.5 ? 0 : 3;
+            } else if (matches.size >= 6) {
+                matchOjama = COLS; matchWidth = COLS; matchCol = 0; // 全幅1段
+            }
             if (matchOjama > 0) {
                 if (battlePhaseRef.current === 'connected' && connRef.current?.open) {
-                    const edgeCol = Math.random() < 0.5 ? 0 : 3; // 左端 or 右端
-                    connRef.current.send({ type: 'ojama', count: matchOjama, width: 3, startCol: edgeCol });
+                    connRef.current.send({ type: 'ojama', count: matchOjama, width: matchWidth, startCol: matchCol });
                 }
                 if (battleMode === 'cpu') {
                     ojamaQueueRef.current += matchOjama;
                     setOjamaQueue(q => q + matchOjama);
-                    matchOjamaWidthRef.current = 3;
-                    matchOjamaColRef.current = Math.random() < 0.5 ? 0 : 3; // 左端 or 右端
+                    matchOjamaWidthRef.current = matchWidth;
+                    matchOjamaColRef.current = matchCol;
                 }
             }
         }
