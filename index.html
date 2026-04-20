@@ -224,11 +224,12 @@ function applyGravityStep(g) {
         const maxR = Math.max(...cells.map(x => x.r));
         if (maxR + 1 >= ROWS) continue; // 底辺
 
-        // グループ最下行の全セルが落下可能か確認
-        const bottomCells = cells.filter(x => x.r === maxR);
+        // グループの全セルの落下先が空いているか確認（非矩形グループ対応）
+        // 最下行だけでなく全セルをチェックしないと、上行の幅広セルが
+        // 下行のすき間にある通常パネルを上書きしてしまうバグが発生する。
         let canFall = true;
-        for (const { c } of bottomCells) {
-            const below = out[maxR + 1][c];
+        for (const { r, c } of cells) {
+            const below = out[r + 1][c];
             if (below && !(below.color === 'ojama' && below.ojamaId === id)) {
                 canFall = false; break;
             }
@@ -358,34 +359,31 @@ function expandWithOjama(matches, g) {
  * 最小単位3個・3の倍数に切り上げ。
  * count <= COLS: 1行バー。count > COLS: 複数行の矩形ブロック。
  */
-function addOjamaToGrid(g, count) {
-    const adjusted = Math.max(3, Math.ceil(count / 3) * 3);
+// 連鎖おじゃまテーブル: index=連鎖数 → 段数(全幅1段=COLS=6マス)
+// 2連鎖=1段, 3連鎖=2段, ..., 13連鎖=12段
+const CHAIN_OJAMA_ROWS = [0,0,1,2,3,4,5,6,7,8,9,10,11,12];
+function addOjamaToGrid(g, count, width = COLS, startCol = 0) {
+    // width=COLS なら全幅。width=3 の場合 startCol=0(左端) or 3(右端) をランダムで選ぶ。
+    const w = Math.min(width, COLS);
+    const ojamaRows = Math.max(1, Math.ceil(count / w));
     const ng = g.map(r => [...r]);
     const id = newOjamaId();
-    const ojamaRows = Math.ceil(adjusted / COLS);
 
-    // 既存パネルの最上行を探す
-    let topOccupied = ROWS;
-    for (let r = 0; r < ROWS; r++) {
-        if (ng[r].some(Boolean)) { topOccupied = r; break; }
+    // 完全に空いている連続 ojamaRows 行を上から探す
+    let startRow = 0;
+    outer: for (let r = 0; r <= ROWS - ojamaRows; r++) {
+        for (let i = 0; i < ojamaRows; i++) {
+            if (ng[r + i].some(Boolean)) continue outer;
+        }
+        startRow = r;
+        break;
     }
 
-    // おじゃまを既存パネルの直上に配置（row 0以上に収める）
-    const startRow = Math.max(0, topOccupied - ojamaRows);
-
-    // 配置先を一旦クリアしてから書き込む（既存パネルを上書きしない）
-    let rem = adjusted;
     for (let i = 0; i < ojamaRows; i++) {
         const r = startRow + i;
         if (r >= ROWS) break;
-        const fill = Math.min(rem, COLS);
-        const safeFill = fill < 3 ? 3 : fill;
-        rem -= safeFill;
-        // 既存パネルが無いセルにだけおじゃまを置く
-        for (let c = 0; c < COLS; c++) {
-            if (c < safeFill && !ng[r][c]) {
-                ng[r][c] = { color: 'ojama', ojamaId: id };
-            }
+        for (let c = startCol; c < startCol + w && c < COLS; c++) {
+            ng[r][c] = { color: 'ojama', ojamaId: id };
         }
     }
     return ng;
@@ -411,6 +409,7 @@ function PanelBlast() {
     const [bestTA, setBestTA] = useState(0);
     const [riseOffset, setRiseOffset] = useState(0);
     const [particles, setParticles] = useState([]);
+
     const [pinch, setPinch] = useState(false); // 天井まで2マスでtrue
     const [bgmOn, setBgmOn] = useState(true); // BGM on/off
     const [pinchBgmOn, setPinchBgmOn] = useState(true); // ピンチBGM on/off
@@ -453,6 +452,8 @@ function PanelBlast() {
     const peerRef = useRef(null); // PeerJS Peer instance
     const connRef = useRef(null); // PeerJS DataConnection
     const ojamaQueueRef = useRef(0); // mirrors ojamaQueue for closures
+    const matchOjamaWidthRef = useRef(COLS); // 消去数おじゃまの幅（3 or COLS）
+    const matchOjamaColRef = useRef(0); // 消去数おじゃまの開始列（0=左端, 3=右端）
     const battlePhaseRef = useRef('off');
     const cpuTimerRef = useRef(null); // CPU対戦タイマー
     // pendingSwap removed — falling swaps are now applied immediately
@@ -513,6 +514,23 @@ function PanelBlast() {
             osc2.stop(t + 0.15);
         }
         catch (e) { }
+    }, [getAudioCtx]);
+    // ── コンボサウンド: 連鎖数に応じてピッチを上昇 ──
+    const playComboSound = useCallback((combo) => {
+        try {
+            const ctx = getAudioCtx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            const baseFreq = 330;
+            osc.frequency.value = baseFreq * Math.pow(1.12246, Math.min(combo, 12));
+            osc.type = 'sine';
+            gain.gain.setValueAtTime(0.15, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.4);
+        } catch(e) {}
     }, [getAudioCtx]);
     // ── BGM: MP3ファイルを <audio> で再生 ──
     const startBgm = useCallback(() => {
@@ -690,7 +708,8 @@ function PanelBlast() {
                 const count = ojamaQueueRef.current;
                 ojamaQueueRef.current = 0;
                 setOjamaQueue(0);
-                const afterOjama = addOjamaToGrid(gridRef.current, count);
+                const afterOjama = addOjamaToGrid(gridRef.current, count, matchOjamaWidthRef.current, matchOjamaWidthRef.current < COLS ? matchOjamaColRef.current : 0);
+                matchOjamaWidthRef.current = COLS; matchOjamaColRef.current = Math.random() < 0.5 ? 0 : 3; // リセット（次回も必ず両端どちらか）
                 gridRef.current = afterOjama;
                 setGrid(afterOjama);
                 // お邪魔を上から落とすアニメーション
@@ -740,12 +759,36 @@ function PanelBlast() {
             const msgKey = Date.now();
             setChainMsg({ text: `✦ Chain ×${chain}!`, pts, key: msgKey });
             setTimeout(() => setChainMsg(m => (m === null || m === void 0 ? void 0 : m.key) === msgKey ? null : m), 1600);
-            // 対戦: 連鎖数に応じてお邪魔パネルを送る
+            // 対戦: 連鎖おじゃまテーブルで段数を決定して送る
             if (battlePhaseRef.current === 'connected' && ((_b = connRef.current) === null || _b === void 0 ? void 0 : _b.open)) {
-                const ojamaCount = (chain - 1) * 3;
-                connRef.current.send({ type: 'ojama', count: ojamaCount });
+                const ojamaRows = CHAIN_OJAMA_ROWS[Math.min(chain, 13)] ?? 0;
+                if (ojamaRows > 0) {
+                    connRef.current.send({ type: 'ojama', count: ojamaRows * COLS });
+                }
             }
         }
+        // ── 消去数ベースのおじゃま送信 (4個消し以上) ──
+        // 4個消し→1段(COLS)、5個消し以上→2段(COLS*2)
+        if (isBattle) {
+            // 4個消し→3マス×1段、5個消し以上→3マス×2段（中央3列配置）
+            let matchOjama = 0;
+            if (matches.size === 4)     matchOjama = 3;      // 3マス×1行
+            else if (matches.size >= 5) matchOjama = 6;      // 3マス×2行
+            if (matchOjama > 0) {
+                if (battlePhaseRef.current === 'connected' && connRef.current?.open) {
+                    const edgeCol = Math.random() < 0.5 ? 0 : 3; // 左端 or 右端
+                    connRef.current.send({ type: 'ojama', count: matchOjama, width: 3, startCol: edgeCol });
+                }
+                if (battleMode === 'cpu') {
+                    ojamaQueueRef.current += matchOjama;
+                    setOjamaQueue(q => q + matchOjama);
+                    matchOjamaWidthRef.current = 3;
+                    matchOjamaColRef.current = Math.random() < 0.5 ? 0 : 3; // 左端 or 右端
+                }
+            }
+        }
+        // ── ドーパミン演出: コンボサウンド ──
+        playComboSound(chain);
         // ── Sort matched cells: left→right, top→bottom (wave-pop effect) ──
         const matchArray = [...matches].sort((a, b) => {
             const [ar, ac] = a.split(",").map(Number);
@@ -1107,6 +1150,8 @@ function PanelBlast() {
             if (data.type === 'ojama') {
                 ojamaQueueRef.current += data.count;
                 setOjamaQueue(q => q + data.count);
+                if (data.width) { matchOjamaWidthRef.current = data.width; }
+                if (data.startCol != null) matchOjamaColRef.current = data.startCol;
                 setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + data.count }));
             }
             if (data.type === 'score') {
@@ -1233,7 +1278,8 @@ function PanelBlast() {
         setTimeout(() => {
             setCountdown(null);
             startGame();
-            const configs = [[12000, 2], [8000, 3], [6000, 4]];
+            // intervalMs を短縮し、除数を小さくしてゲージが溜まりやすくする
+            const configs = [[6000, 2], [4000, 3], [2500, 4]];
             const [intervalMs, maxChainVal] = configs[diff - 1];
             const CHAIN_BONUS = [0, 0, 50, 80, 150, 300, 400, 500, 700, 900];
             let cpuScore = 0;
@@ -1243,10 +1289,13 @@ function PanelBlast() {
                 const blocks = chain * 3 + Math.floor(Math.random() * 3);
                 const pts = blocks * 10 + (CHAIN_BONUS[Math.min(chain, CHAIN_BONUS.length - 1)] || 0);
                 cpuScore += pts;
-                const cpuTopRow = Math.max(2, ROWS - Math.floor(cpuScore / 500));
+                const cpuTopRow = Math.max(2, ROWS - Math.floor(cpuScore / 220));
                 setOpponentInfo(p => ({ ...p, score: cpuScore, topRow: cpuTopRow }));
                 if (chain >= 2) {
-                    const ojamaCount = (chain - 1) * 3;
+                    // 連鎖おじゃまテーブルで段数決定。NORMALは半量。
+                    const ojamaRows = CHAIN_OJAMA_ROWS[Math.min(chain, 13)] ?? 0;
+                    const ojamaRate = diff === 2 ? 0.5 : 1.0;
+                    const ojamaCount = Math.max(COLS, Math.round(ojamaRows * COLS * ojamaRate));
                     ojamaQueueRef.current += ojamaCount;
                     setOjamaQueue(q => q + ojamaCount);
                     setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + ojamaCount }));
@@ -1296,6 +1345,8 @@ function PanelBlast() {
     const onPointerDown = (e, r, c) => {
         if (phaseRef.current !== "play")
             return;
+        // iOS Safari: AudioContext を初回タッチで確実に unlock する
+        getAudioCtx();
         e.currentTarget.setPointerCapture(e.pointerId);
         // Move cursor to this row/col (clamped so right partner is always in-bounds)
         const nc = Math.min(c, COLS - 2);
