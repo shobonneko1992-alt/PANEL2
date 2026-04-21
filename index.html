@@ -662,8 +662,6 @@ function PanelBlast() {
             return;
         const id = setInterval(() => {
             var _a, _b;
-            // 対戦モード中は下からの上昇を廃止（おじゃまは上から降ってくる）
-            if (battlePhaseRef.current === 'connected') return;
             // 消去中・落下中・連鎖中・アクティブ連鎖中・一時停止中はスキップ
             // cycleRunning は全フェーズで true のため、これ1つで十分
             if (cycleRunning.current)
