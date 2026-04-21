@@ -406,6 +406,7 @@ function PanelBlast() {
     const [grid, setGrid] = useState(buildGrid);
     const [cursor, setCursor] = useState({ r: 9, c: 2 });
     const [score, setScore] = useState(0);
+    const [loseCount, setLoseCount] = useState(0); // 対戦モード敗北回数
     const [best, setBest] = useState(0); // time attack best
     const [phase, setPhase] = useState("start"); // "start"|"play"|"gameover"|"clear"
     // flash state is now encoded in grid cells as { color, flashing:true } — no separate flashSet needed
@@ -462,6 +463,7 @@ function PanelBlast() {
     const connRef = useRef(null); // PeerJS DataConnection
     const ojamaQueueRef = useRef([]); // バッチ配列 [{count,width,startCol}]
     const ojamaDropTimerRef = useRef(null); // 対戦用おじゃま自動投下タイマー
+    const gameoverPendingRef = useRef(false); // 1秒遅延ゲームオーバー発火中フラグ
     // matchOjamaWidthRef / matchOjamaColRef はバッチ方式に移行したため廃止
     const battlePhaseRef = useRef('off');
     const cpuTimerRef = useRef(null); // CPU対戦タイマー
@@ -638,9 +640,19 @@ function PanelBlast() {
         setRiseOffset(0);
         const newRow = nextRowRef.current;
         const ng = gridRef.current.map(r => [...r]);
-        if (ng[0].some(Boolean) && !flashingRef.current && !fallingRef.current && !cycleRunning.current) {
-            setPhase('gameover');
-            phaseRef.current = 'gameover';
+        if (ng[0].some(Boolean) && !flashingRef.current && !fallingRef.current && !cycleRunning.current && !(battlePhaseRef.current === 'connected' && (flashingRef.current || chainLvlRef.current > 0))) {
+            if (!gameoverPendingRef.current) {
+                gameoverPendingRef.current = true;
+                setTimeout(() => {
+                    gameoverPendingRef.current = false;
+                    if (phaseRef.current !== 'play') return;
+                    // 1秒後も天井が埋まっていればゲームオーバー
+                    if (gridRef.current[0].some(Boolean)) {
+                        chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                        setPhase('gameover'); phaseRef.current = 'gameover';
+                    }
+                }, 2000);
+            }
             return;
         }
         for (let r = 0; r < ROWS - 1; r++)
@@ -946,10 +958,18 @@ function PanelBlast() {
                                     const didClean = cleanSmallGroups(cl);
                                     if (didClean) { gridRef.current = cl; setGrid(cl); }
                                     const final = didClean ? cl : next;
-                                    if (isGameOver(final) && !flashingRef.current && !cycleRunning.current) {
-                                        chainLvlRef.current = 0; fallingRef.current = false;
-                                        cycleRunning.current = false;
-                                        setPhase("gameover"); phaseRef.current = "gameover"; return;
+                                    if (isGameOver(final) && !flashingRef.current && !cycleRunning.current && !(battlePhaseRef.current === 'connected' && (flashingRef.current || chainLvlRef.current > 0))) {
+                                        if (!gameoverPendingRef.current) {
+                                            gameoverPendingRef.current = true;
+                                            setTimeout(() => {
+                                                gameoverPendingRef.current = false;
+                                                if (phaseRef.current !== 'play') return;
+                                                if (gridRef.current[0].some(Boolean)) {
+                                                    chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                                                    setPhase('gameover'); phaseRef.current = 'gameover';
+                                                }
+                                            }, 2000);
+                                        } return;
                                     }
                                     fallingRef.current = false;
                                     setTimeout(() => cycleRef.current(final, chain + 1), CHAIN_DELAY);
@@ -979,13 +999,18 @@ function PanelBlast() {
                             if (moved) {
                                 setTimeout(tickFall, FALL_STEP_MS);
                             } else {
-                                if (isGameOver(next) && !flashingRef.current && !cycleRunning.current) {
-                                    chainLvlRef.current = 0;
-                                    fallingRef.current = false;
-                                    cycleRunning.current = false;
-                                    setPhase("gameover");
-                                    phaseRef.current = "gameover";
-                                    return;
+                                if (isGameOver(next) && !flashingRef.current && !cycleRunning.current && !(battlePhaseRef.current === 'connected' && (flashingRef.current || chainLvlRef.current > 0))) {
+                                    if (!gameoverPendingRef.current) {
+                                        gameoverPendingRef.current = true;
+                                        setTimeout(() => {
+                                            gameoverPendingRef.current = false;
+                                            if (phaseRef.current !== 'play') return;
+                                            if (gridRef.current[0].some(Boolean)) {
+                                                chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                                                setPhase('gameover'); phaseRef.current = 'gameover';
+                                            }
+                                        }, 2000);
+                                    } return;
                                 }
                                 fallingRef.current = false;
                                 setTimeout(() => cycleRef.current(next, chain + 1), CHAIN_DELAY);
@@ -1074,13 +1099,18 @@ function PanelBlast() {
                 setTimeout(tickFallIdle, FALL_STEP_MS);
             }
             else {
-                if (isGameOver(next) && !flashingRef.current && !cycleRunning.current) {
-                    chainLvlRef.current = 0;
-                    fallingRef.current = false;
-                    cycleRunning.current = false;
-                    setPhase('gameover');
-                    phaseRef.current = 'gameover';
-                    return;
+                if (isGameOver(next) && !flashingRef.current && !cycleRunning.current && !(battlePhaseRef.current === 'connected' && (flashingRef.current || chainLvlRef.current > 0))) {
+                    if (!gameoverPendingRef.current) {
+                        gameoverPendingRef.current = true;
+                        setTimeout(() => {
+                            gameoverPendingRef.current = false;
+                            if (phaseRef.current !== 'play') return;
+                            if (gridRef.current[0].some(Boolean)) {
+                                chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                                setPhase('gameover'); phaseRef.current = 'gameover';
+                            }
+                        }, 2000);
+                    } return;
                 }
                 fallingRef.current = false;
                 // cycleRunning は cycleRef 冒頭で true にセット済みになる
@@ -1115,6 +1145,7 @@ function PanelBlast() {
     }, [doSwap]);
     /* ── §3f  Game Start / Reset ─────────────────────────────── */
     const startGame = useCallback(() => {
+        gameoverPendingRef.current = false;
         const ng = buildGrid();
         setGrid(ng);
         gridRef.current = ng;
@@ -1510,6 +1541,12 @@ function PanelBlast() {
     const isBattle = battlePhase === 'connected' || battlePhaseRef.current === 'connected';
     const isCpuBattle = battleMode === 'cpu' && isBattle;
     const youLose = isBattle && phase === 'gameover';
+    // 負けたタイミングで1回だけカウント
+    const prevYouLoseRef = useRef(false);
+    useEffect(() => {
+        if (youLose && !prevYouLoseRef.current) setLoseCount(n => n + 1);
+        prevYouLoseRef.current = youLose;
+    }, [youLose]);
     const youWin = isBattle && opponentInfo.over && phase !== 'gameover';
     const cpuWon = false; // スコア比較廃止
     const overlayTitleColor = isBattle ? (youLose ? '#FF3B30' : '#30D158') : (phase === 'timeout' ? '#FF9500' : '#fff');
@@ -1620,7 +1657,7 @@ function PanelBlast() {
                         fontFamily: "'Courier New', monospace",
                         writingMode: "vertical-rl",
                     } }, "LEFT"))),
-            phase === "play" && !isBattle && (React.createElement("button", { style: {
+            phase === "play" && (React.createElement("button", { style: {
                     position: "absolute",
                     right: -36, bottom: 110,
                     zIndex: 8,
@@ -1860,6 +1897,8 @@ function PanelBlast() {
                 phase !== "play" && phase !== "countdown" && (React.createElement("div", { style: S.overlay },
                     React.createElement("div", { style: S.overlayCard },
                         React.createElement("div", { style: { ...S.overlayTitle, color: overlayTitleColor, textShadow: overlayTitleGlow } }, overlayTitleText),
+                        youLose && loseCount > 0 && React.createElement("div", { style: { fontSize: 13, color: '#FF6B6B', letterSpacing: 2, marginBottom: 6 } },
+                            "\u2620 敗北 ", loseCount, " 回"),
                         isCpuBattle && null,
                         !isCpuBattle && (phase === 'gameover' || phase === 'timeout') && React.createElement(React.Fragment, null,
                             React.createElement("div", { style: S.overlayScore }, String(score).padStart(7, "0")),
