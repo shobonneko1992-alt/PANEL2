@@ -461,6 +461,7 @@ function PanelBlast() {
     const peerRef = useRef(null); // PeerJS Peer instance
     const connRef = useRef(null); // PeerJS DataConnection
     const ojamaQueueRef = useRef([]); // バッチ配列 [{count,width,startCol}]
+    const ojamaDropTimerRef = useRef(null); // 対戦用おじゃま自動投下タイマー
     // matchOjamaWidthRef / matchOjamaColRef はバッチ方式に移行したため廃止
     const battlePhaseRef = useRef('off');
     const cpuTimerRef = useRef(null); // CPU対戦タイマー
@@ -1221,10 +1222,45 @@ function PanelBlast() {
         peerRef.current = null;
     };
     const startBattleGame = useCallback(() => {
+        if (ojamaDropTimerRef.current) { clearInterval(ojamaDropTimerRef.current); ojamaDropTimerRef.current = null; }
         ojamaQueueRef.current = [];
         setOjamaQueue(0);
         setOpponentInfo({ score: 0, over: false, ojama: 0 });
         startGame(); // 対戦は時間無制限
+        // おじゃまキューを定期的に監視して自動投下するタイマー
+        if (ojamaDropTimerRef.current) clearInterval(ojamaDropTimerRef.current);
+        ojamaDropTimerRef.current = setInterval(() => {
+            if (phaseRef.current !== 'play') return;
+            if (cycleRunning.current) return; // サイクル中は衝突を避ける
+            if (ojamaQueueRef.current.length === 0) return;
+            // キューを取り出して投下
+            const batches = ojamaQueueRef.current;
+            ojamaQueueRef.current = [];
+            setOjamaQueue(0);
+            let g = gridRef.current;
+            for (const batch of batches) {
+                g = addOjamaToGrid(g, batch.count, batch.width, batch.startCol);
+            }
+            gridRef.current = g;
+            setGrid(g);
+            fallingRef.current = true;
+            cycleRunning.current = true;
+            const OJAMA_FALL_MS = 120;
+            const snap = cycleIdRef.current;
+            const tickDrop = () => {
+                if (cycleIdRef.current !== snap) return;
+                const { next, moved } = applyGravityStep(gridRef.current);
+                gridRef.current = next;
+                setGrid(next);
+                if (moved) {
+                    setTimeout(tickDrop, OJAMA_FALL_MS);
+                } else {
+                    fallingRef.current = false;
+                    cycleRef.current(next, 1);
+                }
+            };
+            setTimeout(tickDrop, OJAMA_FALL_MS);
+        }, 2000); // 2秒ごとにキューチェック
     }, [startGame]);
     const hostBattle = useCallback(() => {
         setBattlePhase('hosting');
@@ -1333,6 +1369,7 @@ function PanelBlast() {
     /* ── CPU対戦: シミュレーションタイマー ── */
     const startCpuBattle = useCallback((diff) => {
         if (cpuTimerRef.current) { clearInterval(cpuTimerRef.current); cpuTimerRef.current = null; }
+        if (ojamaDropTimerRef.current) { clearInterval(ojamaDropTimerRef.current); ojamaDropTimerRef.current = null; }
         ojamaQueueRef.current = [];
         setOjamaQueue(0);
         setOpponentInfo({ score: 0, over: false, ojama: 0 });
