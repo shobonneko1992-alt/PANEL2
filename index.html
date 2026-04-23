@@ -469,6 +469,7 @@ function PanelBlast() {
     const connRef = useRef(null); // PeerJS DataConnection
     const ojamaQueueRef = useRef([]); // バッチ配列 [{count,width,startCol}]
     const ojamaDropTimerRef = useRef(null); // 対戦用おじゃま自動投下タイマー
+    const startBattleGameRef = useRef(null); // 最新のstartBattleGameを保持（クロージャ対策）
     const gameoverPendingRef = useRef(false); // 1秒遅延ゲームオーバー発火中フラグ
     // matchOjamaWidthRef / matchOjamaColRef はバッチ方式に移行したため廃止
     const battlePhaseRef = useRef('off');
@@ -1289,7 +1290,7 @@ function PanelBlast() {
             }
             if (data.type === 'start') {
                 // ホストから「試合開始」の合図（二重起動防止）
-                if (phaseRef.current !== 'play') startBattleGame();
+                if (phaseRef.current !== 'play') startBattleGameRef.current?.();
             }
         });
         conn.on('close', () => {
@@ -1357,6 +1358,8 @@ function PanelBlast() {
             }, 2000); // 2秒ごとにキューチェック
         }, 3000); // カウントダウン終了後
     }, [startGame, battleTimeLimit, battleSubMode]);
+    // startBattleGame が更新されるたびに ref に同期
+    useEffect(() => { startBattleGameRef.current = startBattleGame; }, [startBattleGame]);
     const hostBattle = useCallback(() => {
         setBattlePhase('hosting');
         setMyPeerId('');
@@ -1399,7 +1402,7 @@ function PanelBlast() {
                     setBattlePhase('connected');
                     battlePhaseRef.current = 'connected';
                     if (conn.open) conn.send({ type: 'start' });
-                    startBattleGame();
+                    startBattleGameRef.current?.();
                 };
                 conn.on('open', () => setTimeout(doStart, 300));
                 // open が来ない PeerJSバージョン対策フォールバック
@@ -1447,7 +1450,7 @@ function PanelBlast() {
                 conn.on('open', () => {
                     setTimeout(() => {
                         if (phaseRef.current !== 'play') {
-                            startBattleGame();
+                            startBattleGameRef.current?.();
                         }
                     }, 5000);
                 });
