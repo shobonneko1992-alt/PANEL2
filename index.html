@@ -2007,7 +2007,7 @@ function PanelBlast() {
                         !isCpuBattle && (phase === 'gameover' || phase === 'timeout') && React.createElement(React.Fragment, null,
                             React.createElement("div", { style: S.overlayScore }, String(score).padStart(7, "0")),
                             phase === 'timeout' && bestTA > 0 && score >= bestTA && React.createElement("div", { style: S.overlayNewBest }, "\uD83C\uDFC6 New Best!")),
-                        React.createElement("div", { style: S.overlayHint },
+                        !isBattle && React.createElement("div", { style: S.overlayHint },
                             isCpuBattle ? (cpuDiffLabel + " CPU\u6226 " + (phase === 'gameover' ? "\u2014 \u30D6\u30ED\u30C3\u30AF\u304C\u5929\u4E95\u306B\uFF01" : ""))
                             : phase === "gameover" ? "Blocks reached the top!"
                             : phase === "timeout" ? ("1\u5206\u9593\u30B9\u30B3\u30A2\u30A2\u30BF\u30C3\u30AF\u7D42\u4E86\uFF01\u30D9\u30B9\u30C8: " + bestTA.toLocaleString() + " pts")
@@ -2079,7 +2079,7 @@ function PanelBlast() {
                             style: { flex: 1, padding: "7px 4px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700,
                                 background: battleSubMode === 'score' ? "#FFD60A" : "#3A3A6A", color: battleSubMode === 'score' ? "#000" : "#fff", letterSpacing: 1 },
                             onClick: () => { setBattleSubMode('score'); setBattleTimeLimit(60); } }, "⚡ スコアアタック")),
-                    battleSubMode === 'ojama' && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
                         React.createElement("span", { style: { fontSize: 11, color: "#aaa", letterSpacing: 1 } }, "\u304A\u3058\u3083\u307E\u534A\u91CF"),
                         React.createElement("button", {
                             style: { padding: "4px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700,
@@ -2558,6 +2558,4 @@ root.render(React.createElement(PanelBlast));
   <script>
   if("serviceWorker"in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("/sw.js").catch(function(){});});}
   window.addEventListener("beforeinstallprompt",function(e){e.preventDefault();window.__installPrompt=e;});
-  </script>
-</body>
-</html>
+                          !isBattle && >
