@@ -684,21 +684,21 @@ function PanelBlast() {
         if (ng[0].some(Boolean) && !flashingRef.current && !fallingRef.current && !cycleRunning.current && !(battlePhaseRef.current === 'connected' && (flashingRef.current || chainLvlRef.current > 0))) {
             if (!gameoverPendingRef.current) {
                 gameoverPendingRef.current = true;
-                setTimeout(() => {
+                // 即座にカウント＆演出（TRY AGAINで盤面リセットされても消えない）
+                setMyCeilingCount(n => n + 1);
+                if (battlePhaseRef.current === 'connected' && battleTimeLimitRef.current > 0) {
+                    setCeilingHit(true);
                     gameoverPendingRef.current = false;
-                    if (phaseRef.current !== 'play') return;
-                    // 1秒後も天井が埋まっていればゲームオーバー
-                    if (gridRef.current[0].some(Boolean)) {
-                        setMyCeilingCount(n => n + 1);
-                        if (battlePhaseRef.current === 'connected' && battleTimeLimitRef.current > 0) {
-                            // 時間制対戦: phaseはplayのままceilingHitを立てる
-                            setCeilingHit(true);
-                        } else {
+                } else {
+                    setTimeout(() => {
+                        gameoverPendingRef.current = false;
+                        if (phaseRef.current !== 'play') return;
+                        if (gridRef.current[0].some(Boolean)) {
                             chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
                             setPhase('gameover'); phaseRef.current = 'gameover';
                         }
-                    }
-                }, 2000);
+                    }, 2000);
+                }
             }
             return;
         }
@@ -2045,9 +2045,9 @@ function PanelBlast() {
                             isBattle && battleTimeLimit > 0 && ceilingHit && phase === 'play' && phase !== 'timeout' && React.createElement("div", {
                     style: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex',
                         flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 50, borderRadius: 12 } },
-                    React.createElement("div", { style: { fontSize: 26, fontWeight: 900, color: '#FF3B30', textShadow: '0 0 20px #FF3B30', marginBottom: 8, letterSpacing: 4 } }, "😵 天井到達!"),
-                    React.createElement("div", { style: { fontSize: 13, color: '#aaa', marginBottom: 16, letterSpacing: 2 } },
-                        "天井 " + myCeilingCount + " 回目"),
+                    React.createElement("div", { style: { fontSize: 26, fontWeight: 900, color: '#FF3B30', textShadow: '0 0 20px #FF3B30', marginBottom: 4, letterSpacing: 4 } }, "😵 LOSE"),
+                    React.createElement("div", { style: { fontSize: 13, color: "#aaa", marginBottom: 4, letterSpacing: 2 } }, "天井到達"),
+                    React.createElement("div", { style: { fontSize: 32, fontWeight: 900, color: "#FF3B30", marginBottom: 12 } }, myCeilingCount + " 回"),
                     React.createElement("button", {
                         style: { padding: '12px 32px', borderRadius: 16, border: 'none', cursor: 'pointer',
                             fontSize: 16, fontWeight: 900, background: 'linear-gradient(135deg,#FF9500,#FF3B30)',
