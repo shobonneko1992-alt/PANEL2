@@ -2053,15 +2053,24 @@ function PanelBlast() {
                             fontSize: 16, fontWeight: 900, background: 'linear-gradient(135deg,#FF9500,#FF3B30)',
                             color: '#fff', letterSpacing: 3, boxShadow: '0 0 20px #FF950088' },
                         onClick: () => {
-                            // 盤面リセット・cycle再開・phase維持
+                            // 開始時と同じ高さ(START_ROWS段)でリスタート・タイマー継続
                             const newGrid = buildGrid();
                             gridRef.current = newGrid;
                             setGrid(newGrid);
-                            chainLvlRef.current = 0;
-                            fallingRef.current = false;
+                            const ic = { r: 9, c: 2 };
+                            setCursor(ic); cursorRef.current = ic;
+                            setScore(0); scoreRef.current = 0;
+                            setMaxChain(0); setChainMsg(null);
                             flashingRef.current = false;
+                            fallingRef.current = false;
+                            chainLvlRef.current = 0;
                             cycleRunning.current = false;
                             gameoverPendingRef.current = false;
+                            risePausedUntil.current = 0;
+                            riseOffsetRef.current = 0; setRiseOffset(0);
+                            const fn = makeNextRow(null);
+                            nextRowRef.current = fn; setNextRow(fn);
+                            // phase='play' のまま維持（タイマー継続）
                             setCeilingHit(false);
                         }
                     }, "▶ TRY AGAIN")),
