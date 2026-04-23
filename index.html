@@ -2004,7 +2004,7 @@ function PanelBlast() {
                                     React.createElement("div", { style: { textAlign: "center" } },
                                         React.createElement("div", { style: { fontSize: 10, color: "#FF9500" } }, "CPU"),
                                         React.createElement("div", { style: { fontSize: 22, fontWeight: 900, color: "#5AC8FA" } }, String(opponentInfo.score).padStart(7,'0'))))),
-                        !isCpuBattle && (phase === 'gameover' || phase === 'timeout') && React.createElement(React.Fragment, null,
+                        !isCpuBattle && !isBattle && (phase === 'gameover' || phase === 'timeout') && React.createElement(React.Fragment, null,
                             React.createElement("div", { style: S.overlayScore }, String(score).padStart(7, "0")),
                             phase === 'timeout' && bestTA > 0 && score >= bestTA && React.createElement("div", { style: S.overlayNewBest }, "\uD83C\uDFC6 New Best!")),
                         !isBattle && React.createElement("div", { style: S.overlayHint },
