@@ -470,7 +470,9 @@ function PanelBlast() {
     const ojamaQueueRef = useRef([]); // バッチ配列 [{count,width,startCol}]
     const ojamaDropTimerRef = useRef(null); // 対戦用おじゃま自動投下タイマー
     const startBattleGameRef = useRef(null); // 最新のstartBattleGameを保持（クロージャ対策）
+    const battleTimeLimitRef = useRef(0); // battleTimeLimit のref版（クロージャで参照）
     const gameoverPendingRef = useRef(false); // 1秒遅延ゲームオーバー発火中フラグ
+    const [ceilingHit, setCeilingHit] = useState(false); // 対戦時間制タイマーで天井到達中フラグ
     // matchOjamaWidthRef / matchOjamaColRef はバッチ方式に移行したため廃止
     const battlePhaseRef = useRef('off');
     const cpuTimerRef = useRef(null); // CPU対戦タイマー
@@ -621,6 +623,7 @@ function PanelBlast() {
             setBattleTimeLeft(t => {
                 if (t <= 1) {
                     // 時間切れ → スコアで勝敗決定
+                    setCeilingHit(false); // 結果画面を表示するためリセット
                     setPhase('timeout');
                     phaseRef.current = 'timeout';
                     return 0;
@@ -642,7 +645,7 @@ function PanelBlast() {
         } else {
             connRef.current?.send({ type: 'ceilingCount', count: myCeilingCountRef.current });
         }
-    }, [phase, battlePhase, battleTimeLimit]);
+    }, [phase, battlePhase, battleTimeLimit, battleSubMode]);
     /* ── タイムアタック カウントダウン ── */
     useEffect(() => {
         if (mode !== 'timeattack' || phase !== 'play')
@@ -686,8 +689,14 @@ function PanelBlast() {
                     if (phaseRef.current !== 'play') return;
                     // 1秒後も天井が埋まっていればゲームオーバー
                     if (gridRef.current[0].some(Boolean)) {
-                        chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
-                        setPhase('gameover'); phaseRef.current = 'gameover';
+                        setMyCeilingCount(n => n + 1);
+                        if (battlePhaseRef.current === 'connected' && battleTimeLimitRef.current > 0) {
+                            // 時間制対戦: phaseはplayのままceilingHitを立てる
+                            setCeilingHit(true);
+                        } else {
+                            chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                            setPhase('gameover'); phaseRef.current = 'gameover';
+                        }
                     }
                 }, 2000);
             }
@@ -1012,8 +1021,12 @@ function PanelBlast() {
                                                 if (phaseRef.current !== 'play') return;
                                                 if (gridRef.current[0].some(Boolean)) {
                                                     setMyCeilingCount(n => n + 1);
-                                                    chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
-                                                    setPhase('gameover'); phaseRef.current = 'gameover';
+                                                    if (battlePhaseRef.current === 'connected' && battleTimeLimitRef.current > 0) {
+                                                        setCeilingHit(true);
+                                                    } else {
+                                                        chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                                                        setPhase('gameover'); phaseRef.current = 'gameover';
+                                                    }
                                                 }
                                             }, 2000);
                                         } return;
@@ -1054,8 +1067,12 @@ function PanelBlast() {
                                             if (phaseRef.current !== 'play') return;
                                             if (gridRef.current[0].some(Boolean)) {
                                                 setMyCeilingCount(n => n + 1);
-                                                chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
-                                                setPhase('gameover'); phaseRef.current = 'gameover';
+                                                if (battlePhaseRef.current === 'connected' && battleTimeLimitRef.current > 0) {
+                                                    setCeilingHit(true);
+                                                } else {
+                                                    chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                                                    setPhase('gameover'); phaseRef.current = 'gameover';
+                                                }
                                             }
                                         }, 2000);
                                     } return;
@@ -1155,8 +1172,12 @@ function PanelBlast() {
                             if (phaseRef.current !== 'play') return;
                             if (gridRef.current[0].some(Boolean)) {
                                 setMyCeilingCount(n => n + 1);
-                                chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
-                                setPhase('gameover'); phaseRef.current = 'gameover';
+                                if (battlePhaseRef.current === 'connected' && battleTimeLimitRef.current > 0) {
+                                    setCeilingHit(true);
+                                } else {
+                                    chainLvlRef.current = 0; fallingRef.current = false; cycleRunning.current = false;
+                                    setPhase('gameover'); phaseRef.current = 'gameover';
+                                }
                             }
                         }, 2000);
                     } return;
@@ -1313,6 +1334,7 @@ function PanelBlast() {
         setBattleTimeLeft(battleTimeLimit > 0 ? battleTimeLimit : 0);
         setMyCeilingCount(0);
         setOppCeilingCount(0);
+        setCeilingHit(false);
         // 3・2・1 カウントダウン後にゲーム開始
         setCountdown(3);
         setPhase('countdown');
@@ -1360,6 +1382,7 @@ function PanelBlast() {
     }, [startGame, battleTimeLimit, battleSubMode]);
     // startBattleGame が更新されるたびに ref に同期
     useEffect(() => { startBattleGameRef.current = startBattleGame; }, [startBattleGame]);
+    useEffect(() => { battleTimeLimitRef.current = battleTimeLimit; }, [battleTimeLimit]);
     const hostBattle = useCallback(() => {
         setBattlePhase('hosting');
         setMyPeerId('');
@@ -1478,6 +1501,7 @@ function PanelBlast() {
         // タイマー・カウントをリセット
         setMyCeilingCount(0);
         setOppCeilingCount(0);
+        setCeilingHit(false);
         setBattleTimeLeft(battleTimeLimit > 0 ? battleTimeLimit : 0);
         // ── 3・2・1 カウントダウン後にゲーム開始 ──
         setCountdown(3);
@@ -2018,7 +2042,30 @@ function PanelBlast() {
                             React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#FF9500,#FF3B30)" }, onClick: startTimeAttack, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u23F1 1MIN SCORE ATTACK"),
                             React.createElement("button", { style: { ...S.overlayBtn, background: "linear-gradient(135deg,#FF2D55,#8B001A)" }, onClick: function(){ setBattlePhase("mode-select"); }, onMouseEnter: function(e){ e.currentTarget.style.filter="brightness(1.2)"; }, onMouseLeave: function(e){ e.currentTarget.style.filter="brightness(1)"; } }, "\u2694 BATTLE")),
                         phase !== "start" && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 } },
-                            isBattle && battleTimeLimit > 0 && phase === "timeout" && React.createElement(React.Fragment, null,
+                            isBattle && battleTimeLimit > 0 && ceilingHit && phase === 'play' && phase !== 'timeout' && React.createElement("div", {
+                    style: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex',
+                        flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 50, borderRadius: 12 } },
+                    React.createElement("div", { style: { fontSize: 26, fontWeight: 900, color: '#FF3B30', textShadow: '0 0 20px #FF3B30', marginBottom: 8, letterSpacing: 4 } }, "😵 天井到達!"),
+                    React.createElement("div", { style: { fontSize: 13, color: '#aaa', marginBottom: 16, letterSpacing: 2 } },
+                        "天井 " + myCeilingCount + " 回目"),
+                    React.createElement("button", {
+                        style: { padding: '12px 32px', borderRadius: 16, border: 'none', cursor: 'pointer',
+                            fontSize: 16, fontWeight: 900, background: 'linear-gradient(135deg,#FF9500,#FF3B30)',
+                            color: '#fff', letterSpacing: 3, boxShadow: '0 0 20px #FF950088' },
+                        onClick: () => {
+                            // 盤面リセット・cycle再開・phase維持
+                            const newGrid = buildGrid();
+                            gridRef.current = newGrid;
+                            setGrid(newGrid);
+                            chainLvlRef.current = 0;
+                            fallingRef.current = false;
+                            flashingRef.current = false;
+                            cycleRunning.current = false;
+                            gameoverPendingRef.current = false;
+                            setCeilingHit(false);
+                        }
+                    }, "▶ TRY AGAIN")),
+                isBattle && battleTimeLimit > 0 && phase === "timeout" && React.createElement(React.Fragment, null,
                             battleSubMode === 'score'
                             ? React.createElement(React.Fragment, null,
                                 React.createElement("div", { style: { fontSize: 22, fontWeight: 900, letterSpacing: 4, marginBottom: 6,
