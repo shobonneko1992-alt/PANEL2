@@ -471,6 +471,7 @@ function PanelBlast() {
     const ojamaDropTimerRef = useRef(null); // 対戦用おじゃま自動投下タイマー
     const startBattleGameRef = useRef(null); // 最新のstartBattleGameを保持（クロージャ対策）
     const battleTimeLimitRef = useRef(0); // battleTimeLimit のref版（クロージャで参照）
+    const pendingOjamaRef = useRef([]); // 連鎖中おじゃまの保留バッファ（連鎖終了時に一括送信）
     const gameoverPendingRef = useRef(false); // 1秒遅延ゲームオーバー発火中フラグ
     const [ceilingHit, setCeilingHit] = useState(false); // 対戦時間制タイマーで天井到達中フラグ
     // matchOjamaWidthRef / matchOjamaColRef はバッチ方式に移行したため廃止
@@ -768,6 +769,17 @@ function PanelBlast() {
         const matches = clearSet;
         // ── No matches → chain ends; apply pending ojama if any ──
         if (!matches.size) {
+            // 連鎖終了: 保留バッファを一括送信
+            if (pendingOjamaRef.current.length > 0) {
+                for (const batch of pendingOjamaRef.current) {
+                    if (batch.cpu) {
+                        setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + batch.count }));
+                    } else if (connRef.current?.open) {
+                        connRef.current.send({ type: 'ojama', count: batch.count, width: batch.width, startCol: batch.startCol });
+                    }
+                }
+                pendingOjamaRef.current = [];
+            }
             // 連鎖が1回以上あった場合は上昇を3秒間停止
             if (chain > 1) {
                 risePausedUntil.current = Date.now() + 3000;
@@ -832,17 +844,12 @@ function PanelBlast() {
             setChainMsg({ text: `✦ Chain ×${chain}!`, pts, key: msgKey });
             setTimeout(() => setChainMsg(m => (m === null || m === void 0 ? void 0 : m.key) === msgKey ? null : m), 1600);
             // 対戦: スコアアタックモードではおじゃまなし
+            // 連鎖中は保留バッファに積み、連鎖終了時に一括送信する
             if (battlePhaseRef.current === 'connected' && battleSubMode !== 'score') {
                 const ojamaRows = CHAIN_OJAMA_ROWS[Math.min(chain, 13)] ?? 0;
                 if (ojamaRows > 0) {
                     const ojamaCount = halfOjama ? Math.max(COLS, Math.round(ojamaRows * COLS * 0.5)) : ojamaRows * COLS;
-                    if (connRef.current?.open) {
-                        // P2P: 相手に送信
-                        connRef.current.send({ type: 'ojama', count: ojamaCount });
-                    } else if (battleMode === 'cpu') {
-                        // CPU戦: CPUのピンチゲージに反映のみ（自分には送らない）
-                        setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + ojamaCount }));
-                    }
+                    pendingOjamaRef.current.push({ count: ojamaCount, width: COLS, startCol: 0 });
                 }
             }
         }
@@ -862,14 +869,9 @@ function PanelBlast() {
                 matchOjama = COLS; matchWidth = COLS; matchCol = 0; // 全幅1段
             }
             if (matchOjama > 0) {
-                if (battlePhaseRef.current === 'connected' && connRef.current?.open) {
-                    const sendCount = halfOjama ? Math.max(1, Math.round(matchOjama * 0.5)) : matchOjama;
-                    connRef.current.send({ type: 'ojama', count: sendCount, width: matchWidth, startCol: matchCol });
-                }
-                // CPU戦: プレイヤーの消去おじゃまはCPUのピンチゲージに反映のみ（自分には送らない）
-                if (battleMode === 'cpu') {
-                    setOpponentInfo(p => ({ ...p, ojama: (p.ojama || 0) + matchOjama }));
-                }
+                const sendCount = halfOjama ? Math.max(1, Math.round(matchOjama * 0.5)) : matchOjama;
+                // 連鎖中は保留バッファへ（連鎖終了時に一括送信）
+                pendingOjamaRef.current.push({ count: sendCount, width: matchWidth, startCol: matchCol, cpu: battleMode === 'cpu' });
             }
         }
         // ── ドーパミン演出: コンボサウンド ──
